@@ -71,25 +71,34 @@ const authenticateToken = (req, res, next) => {
     next();
   });
 };
-const uploadDir = path.join(process.cwd(), "uploads");
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
+// const uploadDir = path.join(process.cwd(), "uploads");
+// Conditional storage based on environment
+const isDevelopment = process.env.NODE_ENV !== 'production';
+
+// Only create upload directory in development
+if (isDevelopment) {
+  const uploadDir = path.join(process.cwd(), "uploads");
+  if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+  }
 }
+
 app.use('/api/duplicates', authenticateToken, duplicatesRoutes);
 
-// ✅ Multer config
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    cb(null, "articles" + path.extname(file.originalname)); // always overwrite
-  },
-});
+// ✅ Multer config - use memory storage on Vercel
+const storage = isDevelopment 
+  ? multer.diskStorage({
+      destination: (req, file, cb) => {
+        cb(null, path.join(process.cwd(), "uploads"));
+      },
+      filename: (req, file, cb) => {
+        cb(null, "articles" + path.extname(file.originalname));
+      },
+    })
+  : multer.memoryStorage(); // Memory storage for Vercel
 
-// In your Multer configuration, update the fileFilter
 const upload = multer({
-  dest: "uploads/",
+  storage: storage,
   fileFilter: (req, file, cb) => {
     const allowedExtensions = ['.nbib', '.ris', '.bib', '.zip', '.csv', '.enw', '.xml', '.ciw'];
     const fileExt = path.extname(file.originalname).toLowerCase();
@@ -101,35 +110,50 @@ const upload = multer({
     }
   },
   limits: {
-    fileSize: 50 * 1024 * 1024, // 50MB limit for ZIP files
+    fileSize: 50 * 1024 * 1024, // 50MB limit
   }
 });
 
-// ✅ Upload route
+// ✅ Upload route - handle both disk and memory storage
 app.post("/upload", upload.single("file"), (req, res) => {
-  console.log("File uploaded:", req.file); // check this log
-  res.json({ success: true, file: req.file });
-});
-// Add this after your existing Multer configuration
-// Update your Multer configuration for full-text uploads
-const pdfStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const fulltextDir = 'uploads/fulltext/';
-    if (!fs.existsSync(fulltextDir)) {
-      fs.mkdirSync(fulltextDir, { recursive: true });
+  console.log("File uploaded:", req.file);
+  
+  // In production (Vercel), file will be in req.file.buffer
+  // In development, file will be in req.file.path
+  
+  res.json({ 
+    success: true, 
+    file: {
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size,
+      // Don't send buffer in response, it's huge
+      hasBuffer: !!req.file.buffer,
+      path: req.file.path || 'in-memory'
     }
-    cb(null, fulltextDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname);
-    cb(null, uniqueName);
-  },
+  });
 });
+
+// PDF upload configuration
+const pdfStorage = isDevelopment
+  ? multer.diskStorage({
+      destination: (req, file, cb) => {
+        const fulltextDir = 'uploads/fulltext/';
+        if (!fs.existsSync(fulltextDir)) {
+          fs.mkdirSync(fulltextDir, { recursive: true });
+        }
+        cb(null, fulltextDir);
+      },
+      filename: (req, file, cb) => {
+        const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname);
+        cb(null, uniqueName);
+      },
+    })
+  : multer.memoryStorage(); // Memory storage for Vercel
 
 const uploadPDF = multer({
   storage: pdfStorage,
   fileFilter: (req, file, cb) => {
-    // Allow PDF files
     if (file.mimetype === 'application/pdf') {
       cb(null, true);
     } else {
@@ -137,10 +161,9 @@ const uploadPDF = multer({
     }
   },
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit for PDFs
+    fileSize: 10 * 1024 * 1024, // 10MB limit
   }
 });
-
 function normalizeTitle(title = "") {
   return title.trim().toLowerCase().replace(/\s+/g, " ");
 }
