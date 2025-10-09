@@ -26,7 +26,8 @@
     "natural": "^8.1.0",
     "nodemailer": "^7.0.6",
     "prisma": "^6.16.2",
-    "string-similarity": "^4.0.4"
+    "string-similarity": "^4.0.4",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/express": "^5.0.3",
