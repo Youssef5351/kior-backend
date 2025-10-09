@@ -1,0 +1,247 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  firstName String
+  lastName  String
+  email     String   @unique
+  password  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  projects    Project[]       @relation("UserProjects")
+  memberships ProjectMember[]
+  invitations Invitation[]    @relation("UserInvites")
+  
+  // Add these relations for screening
+  screeningDecisions ScreeningDecision[]
+  screeningNotes     ScreeningNote[]
+  
+  // Add these for the missing relations
+  screeningSessions ScreeningSession[]
+  pageViews         PageView[]
+
+  uploadedFullTexts Article[] @relation("FullTextUploads")
+
+  @@map("users")
+}
+
+model Invitation {
+  id        String   @id @default(cuid())
+  email     String
+  role      String
+  message   String?
+  token     String   @unique
+  accepted  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  // Foreign keys
+  projectId   String
+  invitedById String
+
+  // Relations
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  invitedBy User    @relation("UserInvites", fields: [invitedById], references: [id])
+
+  @@map("invitations")
+}
+
+model Project {
+  id          String   @id @default(cuid())
+  title       String
+  type        String
+  domain      String
+  description String?
+  status      String   @default("active")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  blindMode   Boolean  @default(false)
+
+  // Foreign key (owner)
+  ownerId String
+
+  // Relations
+  owner       User            @relation("UserProjects", fields: [ownerId], references: [id], onDelete: Cascade)
+  articles    Article[]
+  members     ProjectMember[]
+  invitations Invitation[]
+  
+  // Add these relations for screening
+  screeningDecisions ScreeningDecision[]
+  screeningNotes     ScreeningNote[]
+  duplicateDetection DuplicateDetection?
+  
+  // Add these for the missing relations
+  screeningSessions ScreeningSession[]
+  pageViews         PageView[]
+
+  @@unique([title, ownerId])
+  @@map("projects")
+}
+
+model ProjectMember {
+  id        String   @id @default(cuid())
+  projectId String
+  userId    String
+  role      String
+  joinedAt  DateTime @default(now())
+
+  // Relations
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@map("project_members")
+}
+
+model Author {
+  id        String   @id @default(cuid())
+  name      String
+  articleId String
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@map("authors")
+}
+
+model DuplicateDetection {
+  id          String   @id @default(cuid())
+  projectId   String   @unique
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  detectedAt  DateTime
+  totalGroups Int
+  totalArticles Int
+  results     Json     // Stores the duplicate detection results
+  
+  @@map("duplicate_detections")
+}
+
+model Article {
+  id        String   @id @default(cuid())
+  title     String
+  abstract  String? @db.Text
+  journal   String?
+  year      Int?
+  doi       String?
+  pmid      String?    
+  url       String?
+  date      DateTime?
+  status    String   @default("pending")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  authors           Author[]
+  publicationTypes  PublicationType[]
+  topics            Topic[]
+  
+  // Add these relations for screening
+  screeningDecisions ScreeningDecision[]
+  screeningNotes     ScreeningNote[]
+  
+  // Add these for duplicate detection
+  duplicateStatus String?   // 'duplicate', 'not_duplicate', null for unresolved
+  resolvedAt     DateTime?
+  resolvedBy     String?    // User ID who resolved the duplicate
+
+
+  fullTextFileName     String?
+  fullTextFilePath     String?
+  fullTextUploadedById String?
+  fullTextUploadedAt   DateTime?
+  
+  // Relation for the uploader
+  fullTextUploadedBy User? @relation("FullTextUploads", fields: [fullTextUploadedById], references: [id])
+  @@map("articles")
+}
+
+model PublicationType {
+  id        String   @id @default(cuid())
+  value     String
+  articleId String
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@map("publication_types")
+}
+
+model Topic {
+  id        String   @id @default(cuid())
+  value     String
+  articleId String
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@map("topics")
+}
+
+model ScreeningDecision {
+  id        String   @id @default(cuid())
+  status    String   // include, exclude, maybe
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  projectId String
+  articleId String
+  userId    String
+  
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  article Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  user     User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([projectId, articleId, userId])
+  @@map("screening_decisions")
+}
+
+model ScreeningNote {
+  id        String   @id @default(cuid())
+  notes     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  projectId String
+  articleId String
+  userId    String
+  
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  article Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  user     User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([projectId, articleId, userId])
+  @@map("screening_notes")
+}
+
+model ScreeningSession {
+  id        String   @id @default(cuid())
+  projectId String
+  userId    String
+  startTime DateTime
+  endTime   DateTime?
+  duration  Int?     // in minutes
+  
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("screening_sessions")
+}
+
+model PageView {
+  id        String   @id @default(cuid())
+  projectId String
+  userId    String
+  pagePath  String    // e.g., '/projects/:id/screening'
+  startTime DateTime
+  endTime   DateTime?
+  duration  Int?      // in minutes
+  
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("page_views")
+}
