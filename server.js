@@ -15,6 +15,7 @@ import { URL } from 'url';
 import AdmZip from 'adm-zip';
 import busboy from 'busboy';
 import duplicatesRoutes from './routes/duplicates.js';
+import { put } from '@vercel/blob';
 
 const transporter = nodemailer.createTransport({
   service: "gmail",
@@ -2551,21 +2552,41 @@ app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => 
       return res.status(400).json({ error: "No files uploaded" });
     }
 
+    console.log(`Processing ${files.length} files for project ${projectId}`);
+
     let allParsedArticles = [];
     let errors = [];
+    let uploadedBlobUrls = [];
 
-    // Step 1: Parse all files and collect articles
+    // Step 1: Upload to Blob Storage and parse files
     for (const file of files) {
       try {
-        const filePath = path.resolve(file.path);
+        console.log(`Processing file: ${file.originalname}, size: ${file.size} bytes`);
+
+        // Upload to Vercel Blob Storage
+        const blob = await put(
+          `${projectId}/${Date.now()}-${file.originalname}`,
+          file.buffer,
+          {
+            access: 'public',
+            token: process.env.BLOB_READ_WRITE_TOKEN,
+          }
+        );
+
+        uploadedBlobUrls.push({
+          fileName: file.originalname,
+          url: blob.url
+        });
+
+        console.log(`Uploaded to blob: ${blob.url}`);
+
+        // Parse file content based on type
         let parsedArticles = [];
 
-        // Handle ZIP files
         if (file.originalname.toLowerCase().endsWith(".zip")) {
-          parsedArticles = await parseZIPFile(filePath);
+          parsedArticles = await parseZIPFileFromBuffer(file.buffer, file.originalname);
         } else {
-          // Handle individual files
-          const content = fs.readFileSync(filePath, "utf8");
+          const content = file.buffer.toString('utf8');
           
           if (file.originalname.toLowerCase().endsWith(".nbib")) {
             parsedArticles = parseNBIB(content);
@@ -2574,25 +2595,33 @@ app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => 
           } else if (file.originalname.toLowerCase().endsWith(".bib")) {
             parsedArticles = parseBibTeX(content);
           } else if (file.originalname.toLowerCase().endsWith(".csv")) {
-             parsedArticles = parseCSV(content);
-            
-            } else {
-            errors.push({ fileName: file.originalname, error: "Unsupported file format" });
+            parsedArticles = parseCSV(content);
+          } else {
+            errors.push({ 
+              fileName: file.originalname, 
+              error: "Unsupported file format" 
+            });
             continue;
           }
         }
 
         if (!parsedArticles || parsedArticles.length === 0) {
-          errors.push({ fileName: file.originalname, error: "No articles found" });
+          errors.push({ 
+            fileName: file.originalname, 
+            error: "No articles found in file" 
+          });
           continue;
         }
 
-        // Add source file info to each article
+        console.log(`Parsed ${parsedArticles.length} articles from ${file.originalname}`);
+
+        // Add metadata to each article
         parsedArticles.forEach(article => {
           article.sourceFile = file.originalname;
+          article.blobUrl = blob.url;
 
-          // Ensure URL is set properly
-          if (!article.url || article.url.includes("uploads\\")) {
+          // Ensure proper URL formatting
+          if (!article.url || article.url.includes("uploads\\") || article.url.includes("uploads/")) {
             article.url = article.pmid
               ? `https://pubmed.ncbi.nlm.nih.gov/${article.pmid}/`
               : article.doi
@@ -2602,7 +2631,9 @@ app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => 
         });
 
         allParsedArticles.push(...parsedArticles);
+
       } catch (fileError) {
+        console.error(`Error processing file ${file.originalname}:`, fileError);
         errors.push({
           fileName: file.originalname,
           error: `File processing failed: ${fileError.message}`
@@ -2610,75 +2641,81 @@ app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => 
       }
     }
 
-    // Step 2: Save ALL articles to database (no deduplication)
-    const savedArticles = await Promise.all(
-      allParsedArticles.map(async (article) => {
-        try {
-          return await prisma.article.create({
-            data: {
-              title: article.title || "Untitled",
-              abstract: article.abstract || "No abstract available.",
-              journal: article.journal || null,
-              year: article.year ? parseInt(article.year, 10) : null,
-              date: article.date || null,
-              doi: article.doi || null,
-              url: article.url || null,
-              pmid: article.pmid || null,
-              projectId,
+    console.log(`Total articles parsed: ${allParsedArticles.length}`);
 
-              authors: {
-                create: (article.authors || []).map((name) => ({ name })),
+    // Step 2: Save articles to database in batches
+    const BATCH_SIZE = 25; // Smaller batches to avoid timeout
+    const savedArticles = [];
+
+    for (let i = 0; i < allParsedArticles.length; i += BATCH_SIZE) {
+      const batch = allParsedArticles.slice(i, i + BATCH_SIZE);
+      console.log(`Saving batch ${Math.floor(i / BATCH_SIZE) + 1} of ${Math.ceil(allParsedArticles.length / BATCH_SIZE)}`);
+      
+      const batchResults = await Promise.all(
+        batch.map(async (article) => {
+          try {
+            return await prisma.article.create({
+              data: {
+                title: article.title || "Untitled",
+                abstract: article.abstract || "No abstract available.",
+                journal: article.journal || null,
+                year: article.year ? parseInt(article.year, 10) : null,
+                date: article.date || null,
+                doi: article.doi || null,
+                url: article.url || null,
+                pmid: article.pmid || null,
+                projectId,
+
+                authors: {
+                  create: (article.authors || []).map((name) => ({ name })),
+                },
+
+                publicationTypes: {
+                  create: (article.publicationTypes || []).map((value) => ({ value })),
+                },
+
+                topics: {
+                  create: (article.topics || []).map((value) => ({ value })),
+                },
               },
-
-              publicationTypes: {
-                create: (article.publicationTypes || []).map((value) => ({ value })),
+              include: { 
+                authors: true, 
+                publicationTypes: true, 
+                topics: true 
               },
+            });
+          } catch (dbError) {
+            console.error(`Database error for article "${article.title}":`, dbError);
+            errors.push({
+              fileName: article.sourceFile,
+              error: `Database save failed for "${article.title}": ${dbError.message}`
+            });
+            return null;
+          }
+        })
+      );
 
-              topics: {
-                create: (article.topics || []).map((value) => ({ value })),
-              },
-            },
-            include: { 
-              authors: true, 
-              publicationTypes: true, 
-              topics: true 
-            },
-          });
-        } catch (dbError) {
-          errors.push({
-            fileName: article.sourceFile,
-            error: `Database save failed for "${article.title}": ${dbError.message}`
-          });
-          return null;
-        }
-      })
-    );
-
-    // Filter out any failed saves
-    const successfullySaved = savedArticles.filter(article => article !== null);
-
-    // Step 3: Clean up uploaded files
-    try {
-      for (const file of files) {
-        fs.unlinkSync(file.path);
-      }
-    } catch (cleanupError) {
-      console.warn('File cleanup warning:', cleanupError.message);
+      savedArticles.push(...batchResults.filter(article => article !== null));
     }
 
+    console.log(`Successfully saved ${savedArticles.length} articles`);
+
+    // Step 3: Return response
     res.json({
       success: true,
       totalParsed: allParsedArticles.length,
-      importedReferences: successfullySaved.length,
-      articles: successfullySaved,
-      errors,
+      importedReferences: savedArticles.length,
+      articles: savedArticles,
+      uploadedFiles: uploadedBlobUrls,
+      errors: errors.length > 0 ? errors : undefined,
     });
 
   } catch (err) {
     console.error('Upload endpoint error:', err);
     res.status(500).json({ 
       error: "File upload and analysis failed", 
-      details: err.message 
+      details: err.message,
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
     });
   }
 });
