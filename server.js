@@ -2591,9 +2591,9 @@ app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => 
         parsedArticles.forEach(article => {
           article.sourceFile = file.originalname;
 
-          // Truncate title if too long (adjust 255 to your column limit)
-          if (article.title && article.title.length > 255) {
-            article.title = article.title.substring(0, 252) + "...";
+          // Truncate title if too long (VARCHAR 191 is default for Prisma String type)
+          if (article.title && article.title.length > 191) {
+            article.title = article.title.substring(0, 188) + "...";
           }
 
           // Ensure URL is set properly
@@ -2635,39 +2635,37 @@ app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => 
       const batchResults = await Promise.all(
         batch.map(async (article) => {
           try {
-            // Additional validation
-            const title = (article.title || "Untitled").substring(0, 255);
-            const abstract = article.abstract ? 
-              (article.abstract.length > 5000 ? article.abstract.substring(0, 5000) : article.abstract) 
-              : "No abstract available.";
+            // Additional validation - VARCHAR(191) is default for String in Prisma
+            const title = (article.title || "Untitled").substring(0, 191);
+            const abstract = article.abstract || "No abstract available.";
 
             return await prisma.article.create({
               data: {
                 title,
                 abstract,
-                journal: article.journal || null,
+                journal: article.journal ? article.journal.substring(0, 191) : null,
                 year: article.year ? parseInt(article.year, 10) : null,
                 date: article.date || null,
-                doi: article.doi || null,
+                doi: article.doi ? article.doi.substring(0, 191) : null,
                 url: article.url || null,
-                pmid: article.pmid || null,
+                pmid: article.pmid ? article.pmid.substring(0, 191) : null,
                 projectId,
 
                 authors: {
                   create: (article.authors || []).map((name) => ({ 
-                    name: name.substring(0, 255) // Truncate author names if needed
+                    name: name.substring(0, 191)
                   })),
                 },
 
                 publicationTypes: {
                   create: (article.publicationTypes || []).map((value) => ({ 
-                    value: value.substring(0, 255) 
+                    value: value.substring(0, 191)
                   })),
                 },
 
                 topics: {
                   create: (article.topics || []).map((value) => ({ 
-                    value: value.substring(0, 255) 
+                    value: value.substring(0, 191)
                   })),
                 },
               },
@@ -2723,7 +2721,8 @@ app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => 
       details: err.message 
     });
   }
-});// Delete project
+});
+// Delete project
 app.delete('/api/projects/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
