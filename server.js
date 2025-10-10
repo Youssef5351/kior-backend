@@ -17,7 +17,9 @@ import busboy from 'busboy';
 import duplicatesRoutes from './routes/duplicates.js';
 
 const transporter = nodemailer.createTransport({
-  service: "gmail", // You can also use Outlook, Yahoo, or SMTP config
+  service: "gmail",
+  port: 587,
+  secure: false,
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
