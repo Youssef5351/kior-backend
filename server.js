@@ -48,6 +48,14 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
+// Add this right after your CORS middleware
+app.options('*', cors({
+  origin: ['https://kior.vercel.app', 'http://localhost:5173'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(express.json());
 
 // Secret key for JWT
@@ -2550,22 +2558,38 @@ app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => 
     let allParsedArticles = [];
     let errors = [];
 
-    // Step 1: Parse all files and collect articles
     console.log(`Processing ${files.length} files for project ${projectId}`);
     
     for (const file of files) {
       try {
         console.log(`Processing file: ${file.originalname}, size: ${file.size} bytes`);
-        const filePath = path.resolve(file.path);
         let parsedArticles = [];
+        let content;
+
+        // ✅ Check if file is in memory (buffer) or on disk (path)
+        if (file.buffer) {
+          // Production/Memory storage - read from buffer
+          content = file.buffer.toString('utf8');
+        } else if (file.path) {
+          // Development/Disk storage - read from file system
+          const filePath = path.resolve(file.path);
+          content = fs.readFileSync(filePath, "utf8");
+        } else {
+          errors.push({ fileName: file.originalname, error: "File data not accessible" });
+          continue;
+        }
 
         // Handle ZIP files
         if (file.originalname.toLowerCase().endsWith(".zip")) {
-          parsedArticles = await parseZIPFile(filePath);
+          if (file.buffer) {
+            // Parse ZIP from buffer (production)
+            parsedArticles = await parseZIPFileFromBuffer(file.buffer);
+          } else {
+            // Parse ZIP from disk (development)
+            parsedArticles = await parseZIPFile(path.resolve(file.path));
+          }
         } else {
           // Handle individual files
-          const content = fs.readFileSync(filePath, "utf8");
-          
           if (file.originalname.toLowerCase().endsWith(".nbib")) {
             parsedArticles = parseNBIB(content);
           } else if (file.originalname.toLowerCase().endsWith(".ris")) {
@@ -2591,7 +2615,7 @@ app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => 
         parsedArticles.forEach(article => {
           article.sourceFile = file.originalname;
 
-          // Truncate title if too long (VARCHAR 191 is default for Prisma String type)
+          // Truncate title if too long
           if (article.title && article.title.length > 191) {
             article.title = article.title.substring(0, 188) + "...";
           }
@@ -2618,8 +2642,8 @@ app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => 
 
     console.log(`Total articles parsed: ${allParsedArticles.length}`);
 
-    // Step 2: Save articles in batches to avoid connection pool exhaustion
-    const BATCH_SIZE = 25; // Adjust based on your connection pool size
+    // Step 2: Save articles in batches
+    const BATCH_SIZE = 25;
     const batches = [];
     
     for (let i = 0; i < allParsedArticles.length; i += BATCH_SIZE) {
@@ -2635,7 +2659,6 @@ app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => 
       const batchResults = await Promise.all(
         batch.map(async (article) => {
           try {
-            // Additional validation - VARCHAR(191) is default for String in Prisma
             const title = (article.title || "Untitled").substring(0, 191);
             const abstract = article.abstract || "No abstract available.";
 
@@ -2689,7 +2712,6 @@ app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => 
 
       savedArticles.push(...batchResults.filter(article => article !== null));
       
-      // Small delay between batches to prevent overwhelming the database
       if (i < batches.length - 1) {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
@@ -2697,13 +2719,17 @@ app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => 
 
     console.log(`Successfully saved ${savedArticles.length} articles`);
 
-    // Step 3: Clean up uploaded files
-    try {
-      for (const file of files) {
-        fs.unlinkSync(file.path);
+    // Step 3: Clean up uploaded files (only for disk storage)
+    if (files.some(f => f.path)) {
+      try {
+        for (const file of files) {
+          if (file.path && fs.existsSync(file.path)) {
+            fs.unlinkSync(file.path);
+          }
+        }
+      } catch (cleanupError) {
+        console.warn('File cleanup warning:', cleanupError.message);
       }
-    } catch (cleanupError) {
-      console.warn('File cleanup warning:', cleanupError.message);
     }
 
     res.json({
@@ -2722,7 +2748,34 @@ app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => 
     });
   }
 });
-// Delete project
+
+// ✅ Add this helper function for parsing ZIP from buffer
+async function parseZIPFileFromBuffer(buffer) {
+  const JSZip = require('jszip');
+  const zip = await JSZip.loadAsync(buffer);
+  let allArticles = [];
+
+  for (const [filename, file] of Object.entries(zip.files)) {
+    if (file.dir) continue;
+
+    const content = await file.async('string');
+    let parsedArticles = [];
+
+    if (filename.toLowerCase().endsWith('.nbib')) {
+      parsedArticles = parseNBIB(content);
+    } else if (filename.toLowerCase().endsWith('.ris')) {
+      parsedArticles = parseRIS(content);
+    } else if (filename.toLowerCase().endsWith('.bib')) {
+      parsedArticles = parseBibTeX(content);
+    } else if (filename.toLowerCase().endsWith('.csv')) {
+      parsedArticles = parseCSV(content);
+    }
+
+    allArticles.push(...parsedArticles);
+  }
+
+  return allArticles;
+  // Delete project
 app.delete('/api/projects/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
