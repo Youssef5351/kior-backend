@@ -1,1 +1,33 @@
-{ "version": 2, "builds": [ { "src": "server.js", "use": "@vercel/node" } ], "routes": [ { "src": "/(.*)", "dest": "server.js" } ], "buildCommand": "npm run vercel-build" }
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "server.js",
+      "use": "@vercel/node",
+      "config": {
+        "maxDuration": 60
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/projects/(.*)/upload",
+      "dest": "server.js",
+      "methods": ["POST"],
+      "headers": {
+        "cache-control": "no-store"
+      }
+    },
+    {
+      "src": "/(.*)",
+      "dest": "server.js"
+    }
+  ],
+  "functions": {
+    "server.js": {
+      "maxDuration": 60,
+      "memory": 3008
+    }
+  },
+
+}
