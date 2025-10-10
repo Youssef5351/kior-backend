@@ -566,11 +566,6 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Replace your existing app.listen(PORT, ...) with:
-server.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
-});
-
 
 
 // --- end helpers ---
