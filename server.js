@@ -37,7 +37,7 @@ transporter.verify((error, success) => {
 
 const prisma = new PrismaClient();
 const app = express();
-const PORT = 5000;
+
 
 
 // Middlewares
@@ -3120,7 +3120,12 @@ app.get('/api/projects/:projectId/download-fulltext/:articleId', async (req, res
     }
   }
 });
-// Start server
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-});
+if (process.env.NODE_ENV !== "production") {
+  const PORT = process.env.PORT || 5000;
+  app.listen(PORT, () => {
+    console.log(`Server running locally on http://localhost:${PORT}`);
+  });
+}
+
+// ✅ Export for Vercel serverless
+export default app;
