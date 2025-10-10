@@ -2775,6 +2775,7 @@ async function parseZIPFileFromBuffer(buffer) {
   }
 
   return allArticles;
+}
   // Delete project
 app.delete('/api/projects/:id', authenticateToken, async (req, res) => {
   try {
