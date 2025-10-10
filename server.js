@@ -48,8 +48,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Add this right after your CORS middleware
-app.options('*', cors({
+app.options(/.*/, cors({
   origin: ['https://kior.vercel.app', 'http://localhost:5173'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
