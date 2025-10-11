@@ -2546,6 +2546,23 @@ app.post('/api/projects/:projectId/page-views', authenticateToken, async (req, r
   }
 });
 app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => {
+  // Vercel-specific optimizations
+  const isVercel = process.env.VERCEL === '1';
+  const MAX_EXECUTION_TIME = isVercel ? 45000 : 120000;
+  
+  // Define the missing function
+  const getOptimalBatchSize = (totalArticles) => {
+    if (process.env.VERCEL) {
+      if (totalArticles > 100) return 5;
+      if (totalArticles > 50) return 8;
+      return 10;
+    }
+    return 25; // Larger batches for local/dev
+  };
+
+  // Set timeout header for Vercel
+  res.setTimeout(MAX_EXECUTION_TIME);
+
   try {
     const { id: projectId } = req.params;
     const files = req.files;
@@ -2554,41 +2571,27 @@ app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => 
       return res.status(400).json({ error: "No files uploaded" });
     }
 
+    // Start timing
+    const startTime = Date.now();
     let allParsedArticles = [];
     let errors = [];
+    let successfullySaved = [];
 
-    console.log(`Processing ${files.length} files for project ${projectId}`);
-    
+    console.log(`📁 Processing ${files.length} files on ${isVercel ? 'Vercel' : 'local'}`);
+
+    // Step 1: Parse all files
     for (const file of files) {
       try {
-        console.log(`Processing file: ${file.originalname}, size: ${file.size} bytes`);
+        const filePath = path.resolve(file.path);
         let parsedArticles = [];
-        let content;
 
-        // ✅ Check if file is in memory (buffer) or on disk (path)
-        if (file.buffer) {
-          // Production/Memory storage - read from buffer
-          content = file.buffer.toString('utf8');
-        } else if (file.path) {
-          // Development/Disk storage - read from file system
-          const filePath = path.resolve(file.path);
-          content = fs.readFileSync(filePath, "utf8");
-        } else {
-          errors.push({ fileName: file.originalname, error: "File data not accessible" });
-          continue;
-        }
+        console.log(`📄 Processing file: ${file.originalname}`);
 
-        // Handle ZIP files
         if (file.originalname.toLowerCase().endsWith(".zip")) {
-          if (file.buffer) {
-            // Parse ZIP from buffer (production)
-            parsedArticles = await parseZIPFileFromBuffer(file.buffer);
-          } else {
-            // Parse ZIP from disk (development)
-            parsedArticles = await parseZIPFile(path.resolve(file.path));
-          }
+          parsedArticles = await parseZIPFile(filePath);
         } else {
-          // Handle individual files
+          const content = fs.readFileSync(filePath, "utf8");
+          
           if (file.originalname.toLowerCase().endsWith(".nbib")) {
             parsedArticles = parseNBIB(content);
           } else if (file.originalname.toLowerCase().endsWith(".ris")) {
@@ -2603,23 +2606,16 @@ app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => 
           }
         }
 
+        console.log(`📊 Parsed ${parsedArticles.length} articles from ${file.originalname}`);
+
         if (!parsedArticles || parsedArticles.length === 0) {
           errors.push({ fileName: file.originalname, error: "No articles found" });
           continue;
         }
 
-        console.log(`Parsed ${parsedArticles.length} articles from ${file.originalname}`);
-
-        // Add source file info and sanitize data
+        // Add source file info
         parsedArticles.forEach(article => {
           article.sourceFile = file.originalname;
-
-          // Truncate title if too long
-          if (article.title && article.title.length > 191) {
-            article.title = article.title.substring(0, 188) + "...";
-          }
-
-          // Ensure URL is set properly
           if (!article.url || article.url.includes("uploads\\")) {
             article.url = article.pmid
               ? `https://pubmed.ncbi.nlm.nih.gov/${article.pmid}/`
@@ -2630,8 +2626,12 @@ app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => 
         });
 
         allParsedArticles.push(...parsedArticles);
+        
+        if (isVercel && (Date.now() - startTime) > 30000) {
+          console.log('⏰ Vercel timeout warning: 30s elapsed');
+        }
       } catch (fileError) {
-        console.error(`Error processing ${file.originalname}:`, fileError);
+        console.error(`❌ Error processing file ${file.originalname}:`, fileError);
         errors.push({
           fileName: file.originalname,
           error: `File processing failed: ${fileError.message}`
@@ -2639,55 +2639,63 @@ app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => 
       }
     }
 
-    console.log(`Total articles parsed: ${allParsedArticles.length}`);
+    console.log(`📝 Total parsed articles: ${allParsedArticles.length}`);
 
-    // Step 2: Save articles in batches
-    const BATCH_SIZE = 25;
-    const batches = [];
-    
-    for (let i = 0; i < allParsedArticles.length; i += BATCH_SIZE) {
-      batches.push(allParsedArticles.slice(i, i + BATCH_SIZE));
-    }
+    // Step 2: FAST BATCH PROCESSING
+    const BATCH_SIZE = getOptimalBatchSize(allParsedArticles.length);
+    const totalBatches = Math.ceil(allParsedArticles.length / BATCH_SIZE);
 
-    const savedArticles = [];
-    
-    for (let i = 0; i < batches.length; i++) {
-      console.log(`Saving batch ${i + 1} of ${batches.length}`);
-      const batch = batches[i];
-      
-      const batchResults = await Promise.all(
-        batch.map(async (article) => {
+    console.log(`⚡ Using ${BATCH_SIZE} batch size for ${totalBatches} batches`);
+
+    for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+      // Check timeout more frequently on Vercel
+      if (isVercel && (Date.now() - startTime) > 50000) {
+        console.log('🚨 Vercel timeout approaching - returning partial results');
+        break; // Return what we have
+      }
+
+      const start = batchIndex * BATCH_SIZE;
+      const end = start + BATCH_SIZE;
+      const batch = allParsedArticles.slice(start, end);
+
+      console.log(`🔄 Processing batch ${batchIndex + 1}/${totalBatches} (articles ${start + 1}-${end})`);
+
+      try {
+        const batchPromises = batch.map(async (article) => {
           try {
-            const title = (article.title || "Untitled").substring(0, 191);
-            const abstract = article.abstract || "No abstract available.";
+            const cleanArticle = {
+              title: (article.title || "Untitled").substring(0, 1000),
+              abstract: (article.abstract || "No abstract").substring(0, 2000),
+              journal: article.journal?.substring(0, 200) || null,
+              year: article.year ? parseInt(article.year, 10) : null,
+              date: article.date || null,
+              doi: article.doi?.substring(0, 100) || null,
+              url: article.url?.substring(0, 200) || null,
+              pmid: article.pmid?.substring(0, 30) || null,
+              projectId,
+            };
 
-            return await prisma.article.create({
+            // Validate year
+            if (cleanArticle.year && (cleanArticle.year < 1900 || cleanArticle.year > 2030)) {
+              cleanArticle.year = null;
+            }
+
+            const savedArticle = await prisma.article.create({
               data: {
-                title,
-                abstract,
-                journal: article.journal ? article.journal.substring(0, 191) : null,
-                year: article.year ? parseInt(article.year, 10) : null,
-                date: article.date || null,
-                doi: article.doi ? article.doi.substring(0, 191) : null,
-                url: article.url || null,
-                pmid: article.pmid ? article.pmid.substring(0, 191) : null,
-                projectId,
-
+                ...cleanArticle,
                 authors: {
-                  create: (article.authors || []).map((name) => ({ 
-                    name: name.substring(0, 191)
+                  create: (article.authors || []).slice(0, 10).map((name) => ({ 
+                    name: name.substring(0, 100)
                   })),
                 },
-
                 publicationTypes: {
-                  create: (article.publicationTypes || []).map((value) => ({ 
-                    value: value.substring(0, 191)
+                  create: (article.publicationTypes || []).slice(0, 5).map((value) => ({ 
+                    value: value.substring(0, 100) 
                   })),
                 },
-
                 topics: {
-                  create: (article.topics || []).map((value) => ({ 
-                    value: value.substring(0, 191)
+                  create: (article.topics || []).slice(0, 10).map((value) => ({ 
+                    value: value.substring(0, 100) 
                   })),
                 },
               },
@@ -2697,57 +2705,74 @@ app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => 
                 topics: true 
               },
             });
+
+            return { success: true, article: savedArticle };
           } catch (dbError) {
-            console.error(`Database error for article "${article.title}":`, dbError);
-            errors.push({
-              fileName: article.sourceFile,
-              articleTitle: article.title,
-              error: `Database save failed: ${dbError.message}`
+            return { 
+              success: false, 
+              error: dbError.message,
+              articleTitle: article.title?.substring(0, 50) || 'Unknown'
+            };
+          }
+        });
+
+        const batchResults = await Promise.all(batchPromises);
+        
+        // Process results
+        batchResults.forEach(result => {
+          if (result.success) {
+            successfullySaved.push(result.article);
+          } else {
+            errors.push({ 
+              error: result.error,
+              articleTitle: result.articleTitle 
             });
-            return null;
           }
-        })
-      );
+        });
 
-      savedArticles.push(...batchResults.filter(article => article !== null));
-      
-      if (i < batches.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 100));
+        console.log(`✅ Batch ${batchIndex + 1}/${totalBatches} completed`);
+
+      } catch (batchError) {
+        console.error(`❌ Batch ${batchIndex + 1} failed:`, batchError);
+        errors.push({ error: `Batch ${batchIndex + 1} failed` });
       }
     }
 
-    console.log(`Successfully saved ${savedArticles.length} articles`);
-
-    // Step 3: Clean up uploaded files (only for disk storage)
-    if (files.some(f => f.path)) {
-      try {
-        for (const file of files) {
-          if (file.path && fs.existsSync(file.path)) {
-            fs.unlinkSync(file.path);
-          }
+    // Step 3: Clean up files
+    try {
+      for (const file of files) {
+        if (fs.existsSync(file.path)) {
+          fs.unlinkSync(file.path);
         }
-      } catch (cleanupError) {
-        console.warn('File cleanup warning:', cleanupError.message);
       }
+    } catch (cleanupError) {
+      console.warn('Cleanup warning:', cleanupError.message);
     }
 
+    const totalTime = Date.now() - startTime;
+    console.log(`🎉 Import completed in ${totalTime}ms: ${successfullySaved.length} saved`);
+
+    // Return results
     res.json({
       success: true,
       totalParsed: allParsedArticles.length,
-      importedReferences: savedArticles.length,
-      articles: savedArticles,
-      errors: errors.length > 0 ? errors : undefined,
+      importedReferences: successfullySaved.length,
+      articles: successfullySaved,
+      errors,
+      partial: totalTime > 50000,
+      executionTime: totalTime,
+      environment: isVercel ? 'vercel' : 'local'
     });
 
   } catch (err) {
-    console.error('Upload endpoint error:', err);
+    console.error('🚨 Upload error:', err);
     res.status(500).json({ 
-      error: "File upload and analysis failed", 
-      details: err.message 
+      error: "Upload failed", 
+      details: err.message,
+      environment: process.env.VERCEL ? 'vercel' : 'local'
     });
   }
 });
-
 // ✅ Add this helper function for parsing ZIP from buffer
 async function parseZIPFileFromBuffer(buffer) {
   const JSZip = require('jszip');
