@@ -13,7 +13,6 @@ import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import { URL } from 'url';
 import AdmZip from 'adm-zip';
-import busboy from 'busboy';
 import duplicatesRoutes from './routes/duplicates.js';
 
 const transporter = nodemailer.createTransport({
@@ -3237,6 +3236,12 @@ app.get('/api/projects/:projectId/download-fulltext/:articleId', async (req, res
   }
 });
 // Start server
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-});
+if (process.env.NODE_ENV !== "production") {
+  const PORT = process.env.PORT || 5000;
+  app.listen(PORT, () => {
+    console.log(`Server running locally on http://localhost:${PORT}`);
+  });
+}
+
+// ✅ Export for Vercel serverless
+export default app;
