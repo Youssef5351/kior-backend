@@ -16,12 +16,15 @@ import AdmZip from 'adm-zip';
 import duplicatesRoutes from './routes/duplicates.js';
 
 const transporter = nodemailer.createTransport({
-  service: "gmail", // You can also use Outlook, Yahoo, or SMTP config
+  service: "gmail",
+  port: 587,
+  secure: false,
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
 });
+
 
 transporter.verify((error, success) => {
   if (error) {
@@ -33,7 +36,6 @@ transporter.verify((error, success) => {
 
 const prisma = new PrismaClient();
 const app = express();
-const PORT = 5000;
 
 // Middlewares
 app.use(cors({
@@ -70,25 +72,33 @@ const authenticateToken = (req, res, next) => {
     next();
   });
 };
-const uploadDir = path.join(process.cwd(), "uploads");
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
+
+const isDevelopment = process.env.NODE_ENV !== 'production';
+
+// Only create upload directory in development
+if (isDevelopment) {
+  const uploadDir = path.join(process.cwd(), "uploads");
+  if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+  }
 }
+
 app.use('/api/duplicates', authenticateToken, duplicatesRoutes);
 
 // ✅ Multer config
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    cb(null, "articles" + path.extname(file.originalname)); // always overwrite
-  },
-});
+const storage = isDevelopment 
+  ? multer.diskStorage({
+      destination: (req, file, cb) => {
+        cb(null, path.join(process.cwd(), "uploads"));
+      },
+      filename: (req, file, cb) => {
+        cb(null, "articles" + path.extname(file.originalname));
+      },
+    })
+  : multer.memoryStorage(); // Memory storage for Vercel
 
-// In your Multer configuration, update the fileFilter
 const upload = multer({
-  dest: "uploads/",
+  storage: storage,
   fileFilter: (req, file, cb) => {
     const allowedExtensions = ['.nbib', '.ris', '.bib', '.zip', '.csv', '.enw', '.xml', '.ciw'];
     const fileExt = path.extname(file.originalname).toLowerCase();
@@ -100,9 +110,10 @@ const upload = multer({
     }
   },
   limits: {
-    fileSize: 50 * 1024 * 1024, // 50MB limit for ZIP files
+    fileSize: 50 * 1024 * 1024, // 50MB limit
   }
 });
+
 
 // ✅ Upload route
 app.post("/upload", upload.single("file"), (req, res) => {
