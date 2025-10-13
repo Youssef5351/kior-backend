@@ -117,29 +117,42 @@ const upload = multer({
 
 // ✅ Upload route
 app.post("/upload", upload.single("file"), (req, res) => {
-  console.log("File uploaded:", req.file); // check this log
-  res.json({ success: true, file: req.file });
-});
-// Add this after your existing Multer configuration
-// Update your Multer configuration for full-text uploads
-const pdfStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const fulltextDir = 'uploads/fulltext/';
-    if (!fs.existsSync(fulltextDir)) {
-      fs.mkdirSync(fulltextDir, { recursive: true });
+  console.log("File uploaded:", req.file);
+  
+  // In production (Vercel), file will be in req.file.buffer
+  // In development, file will be in req.file.path
+  
+  res.json({ 
+    success: true, 
+    file: {
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size,
+      // Don't send buffer in response, it's huge
+      hasBuffer: !!req.file.buffer,
+      path: req.file.path || 'in-memory'
     }
-    cb(null, fulltextDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname);
-    cb(null, uniqueName);
-  },
+  });
 });
+const pdfStorage = isDevelopment
+  ? multer.diskStorage({
+      destination: (req, file, cb) => {
+        const fulltextDir = 'uploads/fulltext/';
+        if (!fs.existsSync(fulltextDir)) {
+          fs.mkdirSync(fulltextDir, { recursive: true });
+        }
+        cb(null, fulltextDir);
+      },
+      filename: (req, file, cb) => {
+        const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname);
+        cb(null, uniqueName);
+      },
+    })
+  : multer.memoryStorage(); // Memory storage for Vercel
 
 const uploadPDF = multer({
   storage: pdfStorage,
   fileFilter: (req, file, cb) => {
-    // Allow PDF files
     if (file.mimetype === 'application/pdf') {
       cb(null, true);
     } else {
@@ -147,14 +160,12 @@ const uploadPDF = multer({
     }
   },
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit for PDFs
+    fileSize: 10 * 1024 * 1024, // 10MB limit
   }
 });
-
 function normalizeTitle(title = "") {
   return title.trim().toLowerCase().replace(/\s+/g, " ");
 }
-
 
 function detectDuplicatesByTitleYear(articles) {
   // articles: array of { id, title, year, ... }
@@ -548,13 +559,6 @@ app.get('/health', (req, res) => {
     activeProjects: projectClients.size
   });
 });
-
-// Replace your existing app.listen(PORT, ...) with:
-server.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
-});
-
-
 
 // --- end helpers ---
 function parseNBIB(content) {
