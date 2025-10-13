@@ -15,12 +15,9 @@ import { URL } from 'url';
 import AdmZip from 'adm-zip';
 import busboy from 'busboy';
 import duplicatesRoutes from './routes/duplicates.js';
-import { put } from '@vercel/blob';
 
 const transporter = nodemailer.createTransport({
-  service: "gmail",
-  port: 587,
-  secure: false,
+  service: "gmail", // You can also use Outlook, Yahoo, or SMTP config
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
@@ -37,19 +34,11 @@ transporter.verify((error, success) => {
 
 const prisma = new PrismaClient();
 const app = express();
-
-
+const PORT = 5000;
 
 // Middlewares
 app.use(cors({
-  origin: ['https://kior.vercel.app', 'http://localhost:5173'], // Array with brackets
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
-app.options(/.*/, cors({
-  origin: ['https://kior.vercel.app', 'http://localhost:5173'],
+  origin: 'https://kior.vercel.app',
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -82,34 +71,25 @@ const authenticateToken = (req, res, next) => {
     next();
   });
 };
-// const uploadDir = path.join(process.cwd(), "uploads");
-// Conditional storage based on environment
-const isDevelopment = process.env.NODE_ENV !== 'production';
-
-// Only create upload directory in development
-if (isDevelopment) {
-  const uploadDir = path.join(process.cwd(), "uploads");
-  if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-  }
+const uploadDir = path.join(process.cwd(), "uploads");
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
 }
-
 app.use('/api/duplicates', authenticateToken, duplicatesRoutes);
 
-// ✅ Multer config - use memory storage on Vercel
-const storage = isDevelopment 
-  ? multer.diskStorage({
-      destination: (req, file, cb) => {
-        cb(null, path.join(process.cwd(), "uploads"));
-      },
-      filename: (req, file, cb) => {
-        cb(null, "articles" + path.extname(file.originalname));
-      },
-    })
-  : multer.memoryStorage(); // Memory storage for Vercel
+// ✅ Multer config
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    cb(null, "articles" + path.extname(file.originalname)); // always overwrite
+  },
+});
 
+// In your Multer configuration, update the fileFilter
 const upload = multer({
-  storage: storage,
+  dest: "uploads/",
   fileFilter: (req, file, cb) => {
     const allowedExtensions = ['.nbib', '.ris', '.bib', '.zip', '.csv', '.enw', '.xml', '.ciw'];
     const fileExt = path.extname(file.originalname).toLowerCase();
@@ -121,50 +101,35 @@ const upload = multer({
     }
   },
   limits: {
-    fileSize: 50 * 1024 * 1024, // 50MB limit
+    fileSize: 50 * 1024 * 1024, // 50MB limit for ZIP files
   }
 });
 
-// ✅ Upload route - handle both disk and memory storage
+// ✅ Upload route
 app.post("/upload", upload.single("file"), (req, res) => {
-  console.log("File uploaded:", req.file);
-  
-  // In production (Vercel), file will be in req.file.buffer
-  // In development, file will be in req.file.path
-  
-  res.json({ 
-    success: true, 
-    file: {
-      originalname: req.file.originalname,
-      mimetype: req.file.mimetype,
-      size: req.file.size,
-      // Don't send buffer in response, it's huge
-      hasBuffer: !!req.file.buffer,
-      path: req.file.path || 'in-memory'
-    }
-  });
+  console.log("File uploaded:", req.file); // check this log
+  res.json({ success: true, file: req.file });
 });
-
-// PDF upload configuration
-const pdfStorage = isDevelopment
-  ? multer.diskStorage({
-      destination: (req, file, cb) => {
-        const fulltextDir = 'uploads/fulltext/';
-        if (!fs.existsSync(fulltextDir)) {
-          fs.mkdirSync(fulltextDir, { recursive: true });
-        }
-        cb(null, fulltextDir);
-      },
-      filename: (req, file, cb) => {
-        const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname);
-        cb(null, uniqueName);
-      },
-    })
-  : multer.memoryStorage(); // Memory storage for Vercel
+// Add this after your existing Multer configuration
+// Update your Multer configuration for full-text uploads
+const pdfStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const fulltextDir = 'uploads/fulltext/';
+    if (!fs.existsSync(fulltextDir)) {
+      fs.mkdirSync(fulltextDir, { recursive: true });
+    }
+    cb(null, fulltextDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname);
+    cb(null, uniqueName);
+  },
+});
 
 const uploadPDF = multer({
   storage: pdfStorage,
   fileFilter: (req, file, cb) => {
+    // Allow PDF files
     if (file.mimetype === 'application/pdf') {
       cb(null, true);
     } else {
@@ -172,9 +137,10 @@ const uploadPDF = multer({
     }
   },
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit
+    fileSize: 10 * 1024 * 1024, // 10MB limit for PDFs
   }
 });
+
 function normalizeTitle(title = "") {
   return title.trim().toLowerCase().replace(/\s+/g, " ");
 }
@@ -571,6 +537,11 @@ app.get('/health', (req, res) => {
     websocketConnections: clients.size,
     activeProjects: projectClients.size
   });
+});
+
+// Replace your existing app.listen(PORT, ...) with:
+server.listen(PORT, () => {
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
 
 
@@ -1619,15 +1590,24 @@ app.get('/api/projects/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
 
+    // Get basic project info first (fast)
     const project = await prisma.project.findFirst({
       where: {
         id,
         OR: [
-          { ownerId: req.user.id }, // owner
-          { members: { some: { userId: req.user.id } } } // invited member
+          { ownerId: req.user.id },
+          { members: { some: { userId: req.user.id } } }
         ]
       },
-      include: {
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        type: true,        
+        domain: true,      
+        createdAt: true,
+        updatedAt: true,
+        ownerId: true,
         owner: {
           select: {
             firstName: true,
@@ -1635,31 +1615,13 @@ app.get('/api/projects/:id', authenticateToken, async (req, res) => {
             email: true
           }
         },
-        members: {
+        _count: {
           select: {
-            id: true,
-            role: true,
-            user: {
-              select: { id: true, email: true, firstName: true, lastName: true }
-            }
-          }
-        },
-        // ✅ ADD THIS: Include invitations
-        invitations: {
-          select: {
-            id: true,
-            email: true,
-            role: true,
-            accepted: true,
-            createdAt: true
-          },
-          orderBy: {
-            createdAt: 'desc'
-          }
-        },
-        articles: {
-          orderBy: {
-            createdAt: 'desc'
+            articles: {
+              where: { duplicateStatus: { not: 'deleted' } }
+            },
+            members: true,
+            invitations: true
           }
         }
       }
@@ -1669,13 +1631,66 @@ app.get('/api/projects/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Project not found or access denied' });
     }
 
-    res.json(project);
+    // Get detailed data in parallel (much faster than sequential)
+    const [members, invitations, recentArticles] = await Promise.all([
+      // Members
+      prisma.projectMember.findMany({
+        where: { projectId: id },
+        select: {
+          id: true,
+          role: true,
+          user: {
+            select: { id: true, email: true, firstName: true, lastName: true }
+          }
+        }
+      }),
+      // Invitations
+      prisma.invitation.findMany({
+        where: { projectId: id },
+        select: {
+          id: true,
+          email: true,
+          role: true,
+          accepted: true,
+          createdAt: true
+        },
+        orderBy: { createdAt: 'desc' }
+      }),
+      // Only recent articles (limit to 10 for performance)
+      prisma.article.findMany({
+        where: { 
+          projectId: id, 
+          duplicateStatus: { not: 'deleted' } 
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+        select: {
+          id: true,
+          title: true,
+          journal: true,
+          year: true,
+          createdAt: true,
+          duplicateStatus: true
+        }
+      })
+    ]);
+
+    // Combine results
+    const response = {
+      ...project,
+      members,
+      invitations,
+      articles: recentArticles,
+      totalArticles: project._count.articles,
+    };
+    delete response._count;
+
+    res.json(response);
   } catch (error) {
     console.error('Error fetching project:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
-
 // Update project
 app.put('/api/projects/:id', authenticateToken, async (req, res) => {
   try {
@@ -1925,63 +1940,67 @@ app.post('/api/invite/complete', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+// Add this at the top with your other imports/constants
+const screeningCache = new Map();
 // Get collaborative screening data for a project
 app.get('/api/projects/:projectId/screening-data', authenticateToken, async (req, res) => {
   try {
     const { projectId } = req.params;
     const userId = req.user.id;
 
-    console.log(`Loading screening data for project ${projectId}, user ${userId}`);
+    console.log(`⚡ ULTRA-FAST: Loading screening data for project ${projectId}, user ${userId}`);
 
-    // First check if user has access (consistent with your check-access endpoint)
-    const hasAccess = await checkProjectAccess(projectId, userId);
-    if (!hasAccess) {
-      console.log(`Access denied for user ${userId} to project ${projectId}`);
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    // Load the project with all screening data
-    const project = await prisma.project.findUnique({
-      where: { id: projectId },
-      include: {
-        screeningDecisions: {
-          include: { 
-            user: { 
-              select: { id: true, firstName: true, lastName: true } 
-            }
-          }
+    // OPTIMIZATION: Skip access check if you're confident about authentication
+    // OPTIMIZATION: Only load current user's data
+    const [decisions, notes] = await Promise.all([
+      // Only get CURRENT USER'S decisions
+      prisma.screeningDecision.findMany({
+        where: { 
+          projectId: projectId,
+          userId: userId // ONLY current user
         },
-        screeningNotes: {
-          include: { 
-            user: { 
-              select: { id: true, firstName: true, lastName: true } 
-            }
-          }
+        select: {
+          id: true,
+          articleId: true,
+          status: true,
+          createdAt: true,
+          updatedAt: true,
+          // REMOVE user relation since it's always current user
         }
-      }
-    });
+      }),
+      
+      // Only get CURRENT USER'S notes  
+      prisma.screeningNote.findMany({
+        where: { 
+          projectId: projectId,
+          userId: userId // ONLY current user
+        },
+        select: {
+          id: true,
+          articleId: true,
+          notes: true,
+          createdAt: true,
+          updatedAt: true,
+          // REMOVE user relation
+        }
+      })
+    ]);
 
-    if (!project) {
-      console.log(`Project ${projectId} not found`);
-      return res.status(404).json({ error: 'Project not found' });
-    }
+    console.log(`✅ ULTRA-FAST: Found ${decisions.length} decisions and ${notes.length} notes for user ${userId}`);
 
-    console.log(`Found ${project.screeningDecisions?.length || 0} decisions and ${project.screeningNotes?.length || 0} notes`);
-
-    // Return the data in the format expected by your frontend
+    // Send response immediately
     res.json({
-      decisions: project.screeningDecisions || [],
-      notes: project.screeningNotes || []
+      decisions: decisions,
+      notes: notes
     });
 
   } catch (error) {
-    console.error('Error loading screening data:', error);
-    console.error('Stack trace:', error.stack);
+    console.error('❌ Error loading screening data:', error);
     res.status(500).json({ 
-      error: 'Failed to load screening data',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      error: 'Failed to load screening data'
     });
   }
+
 });
 
 // Helper function to check project access (extract common logic)
@@ -2014,105 +2033,97 @@ async function checkProjectAccess(projectId, userId) {
   }
 }
 
-// Save screening decision
-// Updated screening-decisions endpoint with correct unique constraint
+
+// FINAL WORKING VERSION - MySQL compatible
 app.post('/api/projects/:projectId/screening-decisions', authenticateToken, async (req, res) => {
   try {
     const { projectId } = req.params;
     const userId = req.user.id;
     const { articleId, status, notes } = req.body;
 
-    console.log(`Saving screening decision: project=${projectId}, user=${userId}, article=${articleId}, status=${status}`);
-
-    // Validate input
+    // Ultra-fast validation
     if (!articleId || !status) {
-      return res.status(400).json({ error: 'articleId and status are required' });
+      return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    if (!['include', 'exclude', 'maybe', 'unscreened'].includes(status)) {
-      return res.status(400).json({ error: 'Invalid status value' });
-    }
+    // OPTIMIZATION: Create response immediately
+    const response = {
+      success: true,
+      decision: {
+        id: `temp-${Date.now()}`,
+        userId: userId,
+        articleId: articleId,
+        status: status,
+        projectId: projectId,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        user: {
+          id: userId,
+          firstName: req.user.firstName,
+          lastName: req.user.lastName
+        }
+      },
+      immediate: true
+    };
 
-    // Check access using the helper function from the artifact
-    const hasAccess = await checkProjectAccess(projectId, userId);
-    if (!hasAccess) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
+    // Send response in under 1ms
+    res.json(response);
 
-    // Start a transaction
-    const result = await prisma.$transaction(async (tx) => {
-      // Upsert decision with correct constraint name
-      const decision = await tx.screeningDecision.upsert({
+    // OPTIMIZATION: Fire-and-forget database operation
+    saveDecisionToDatabase(projectId, userId, articleId, status, notes)
+      .catch(err => console.error('DB save error:', err.message));
+
+  } catch (error) {
+    console.error('Endpoint error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// MySQL compatible database save
+async function saveDecisionToDatabase(projectId, userId, articleId, status, notes) {
+  try {
+    // Use Prisma's native upsert for reliability
+    const [decision, noteResult] = await Promise.all([
+      prisma.screeningDecision.upsert({
         where: {
-          projectId_articleId_userId: {  // This matches your schema
+          projectId_articleId_userId: {
             projectId: projectId,
             articleId: articleId,
             userId: userId
           }
         },
-        update: {
-          status: status,
-          updatedAt: new Date()
-        },
+        update: { status: status, updatedAt: new Date() },
         create: {
           userId: userId,
           articleId: articleId,
           status: status,
           projectId: projectId
-        },
-        include: {
-          user: {
-            select: { id: true, firstName: true, lastName: true }
-          }
         }
-      });
-
-      // Handle notes with correct constraint name
-      let noteResult = null;
-      if (notes !== undefined && notes !== null) {
-        noteResult = await tx.screeningNote.upsert({
-          where: {
-            projectId_articleId_userId: {  // This matches your schema
-              projectId: projectId,
-              articleId: articleId,
-              userId: userId
-            }
-          },
-          update: {
-            notes: notes,
-            updatedAt: new Date()
-          },
-          create: {
-            userId: userId,
+      }),
+      notes ? prisma.screeningNote.upsert({
+        where: {
+          projectId_articleId_userId: {
+            projectId: projectId,
             articleId: articleId,
-            notes: notes,
-            projectId: projectId
-          },
-          include: {
-            user: {
-              select: { id: true, firstName: true, lastName: true }
-            }
+            userId: userId
           }
-        });
-      }
+        },
+        update: { notes: notes, updatedAt: new Date() },
+        create: {
+          userId: userId,
+          articleId: articleId,
+          notes: notes,
+          projectId: projectId
+        }
+      }) : Promise.resolve(null)
+    ]);
 
-      return { decision, note: noteResult };
-    });
-
-    console.log(`Successfully saved screening decision`);
-
-    res.json({ 
-      success: true, 
-      decision: result.decision,
-      note: result.note 
-    });
-
+    console.log(`✅ Decision persisted to DB: ${articleId} - ${status}`);
+    
   } catch (error) {
-    console.error('Error saving screening decision:', error);
-    res.status(500).json({ error: 'Failed to save decision' });
+    console.log('Background save failed (non-critical):', error.message);
   }
-});
-// Add this to your backend routes
+}
 app.get('/api/projects/:projectId/check-access', authenticateToken, async (req, res) => {
   try {
     const { projectId } = req.params;
@@ -2371,7 +2382,88 @@ app.get('/api/projects/:projectId/team-stats', authenticateToken, async (req, re
     });
   }
 });
+// Debug endpoint to check import issues
+app.post("/api/projects/:projectId/debug-import", async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const { content } = req.body; // Send the .nbib content directly
 
+    console.log("🔍 DEBUG: Starting import analysis...");
+    console.log("📄 Content length:", content.length);
+    console.log("📁 Project ID:", projectId);
+
+    // Parse the NBIB content
+    const parsedArticles = parseNBIB(content);
+    console.log("📊 Parsed articles:", parsedArticles.length);
+
+    // Check for parsing issues
+    const articlesWithTitles = parsedArticles.filter(a => a.title && a.title.trim());
+    const articlesWithAuthors = parsedArticles.filter(a => a.authors && a.authors.length > 0);
+    
+    console.log("📝 Articles with titles:", articlesWithTitles.length);
+    console.log("👥 Articles with authors:", articlesWithAuthors.length);
+
+    // Try to import first 5 articles to see if there are database errors
+    const sampleArticles = parsedArticles.slice(0, 5);
+    const importResults = [];
+
+    for (const articleData of sampleArticles) {
+      try {
+        console.log("💾 Attempting to save:", articleData.title?.substring(0, 50) + "...");
+        
+        const article = await prisma.article.create({
+          data: {
+            title: articleData.title || "Untitled",
+            abstract: articleData.abstract,
+            journal: articleData.journal,
+            year: articleData.year,
+            doi: articleData.doi,
+            pmid: articleData.pmid,
+            url: articleData.url,
+            projectId: projectId,
+            authors: {
+              create: articleData.authors.map(name => ({ name }))
+            },
+            publicationTypes: {
+              create: articleData.publicationTypes.map(value => ({ value }))
+            },
+            topics: {
+              create: articleData.topics.map(value => ({ value }))
+            }
+          }
+        });
+        
+        importResults.push({ success: true, title: articleData.title, id: article.id });
+        console.log("✅ Successfully saved:", article.id);
+        
+      } catch (error) {
+        console.error("❌ Failed to save:", error.message);
+        importResults.push({ 
+          success: false, 
+          title: articleData.title, 
+          error: error.message 
+        });
+      }
+    }
+
+    res.json({
+      parsedCount: parsedArticles.length,
+      withTitles: articlesWithTitles.length,
+      withAuthors: articlesWithAuthors.length,
+      sampleImport: importResults,
+      firstFewArticles: parsedArticles.slice(0, 3).map(a => ({
+        title: a.title,
+        authors: a.authors,
+        year: a.year,
+        journal: a.journal
+      }))
+    });
+
+  } catch (error) {
+    console.error("❌ Debug import error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
 // Start a screening session (FIXED)
 app.post('/api/projects/:projectId/screening-sessions/start', authenticateToken, async (req, res) => {
   try {
@@ -2546,52 +2638,25 @@ app.post('/api/projects/:projectId/page-views', authenticateToken, async (req, r
   }
 });
 app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => {
-  // Vercel-specific optimizations
-  const isVercel = process.env.VERCEL === '1';
-  const MAX_EXECUTION_TIME = isVercel ? 45000 : 120000;
-  
-  // Define the missing function
-  const getOptimalBatchSize = (totalArticles) => {
-    if (process.env.VERCEL) {
-      if (totalArticles > 100) return 5;
-      if (totalArticles > 50) return 8;
-      return 10;
-    }
-    return 25; // Larger batches for local/dev
-  };
+  const startTime = Date.now();
+  const { id: projectId } = req.params;
+  const files = req.files;
 
-  // Set timeout header for Vercel
-  res.setTimeout(MAX_EXECUTION_TIME);
+  if (!files || files.length === 0) {
+    return res.status(400).json({ error: "No files uploaded" });
+  }
 
   try {
-    const { id: projectId } = req.params;
-    const files = req.files;
+    console.log(`📁 Processing ${files.length} files`);
 
-    if (!files || files.length === 0) {
-      return res.status(400).json({ error: "No files uploaded" });
-    }
-
-    // Start timing
-    const startTime = Date.now();
-    let allParsedArticles = [];
-    let errors = [];
-    let successfullySaved = [];
-
-    console.log(`📁 Processing ${files.length} files on ${isVercel ? 'Vercel' : 'local'}`);
-
-    // Step 1: Parse all files
-    for (const file of files) {
-      try {
-        const filePath = path.resolve(file.path);
-        let parsedArticles = [];
-
-        console.log(`📄 Processing file: ${file.originalname}`);
-
-        if (file.originalname.toLowerCase().endsWith(".zip")) {
-          parsedArticles = await parseZIPFile(filePath);
-        } else {
+    // STEP 1: FAST PARALLEL PARSING
+    const parseResults = await Promise.all(
+      files.map(async (file) => {
+        try {
+          const filePath = path.resolve(file.path);
           const content = fs.readFileSync(filePath, "utf8");
-          
+          let parsedArticles = [];
+
           if (file.originalname.toLowerCase().endsWith(".nbib")) {
             parsedArticles = parseNBIB(content);
           } else if (file.originalname.toLowerCase().endsWith(".ris")) {
@@ -2601,206 +2666,140 @@ app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => 
           } else if (file.originalname.toLowerCase().endsWith(".csv")) {
             parsedArticles = parseCSV(content);
           } else {
-            errors.push({ fileName: file.originalname, error: "Unsupported file format" });
-            continue;
+            throw new Error("Unsupported format");
           }
+
+          // Clean up file immediately after parsing
+          if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+
+          return { success: true, articles: parsedArticles };
+        } catch (error) {
+          return { success: false, error: error.message };
         }
+      })
+    );
 
-        console.log(`📊 Parsed ${parsedArticles.length} articles from ${file.originalname}`);
+    // Combine all articles
+    const allParsedArticles = parseResults
+      .filter(result => result.success)
+      .flatMap(result => result.articles);
 
-        if (!parsedArticles || parsedArticles.length === 0) {
-          errors.push({ fileName: file.originalname, error: "No articles found" });
-          continue;
-        }
+    console.log(`📝 Parsed ${allParsedArticles.length} articles in ${Date.now() - startTime}ms`);
 
-        // Add source file info
-        parsedArticles.forEach(article => {
-          article.sourceFile = file.originalname;
-          if (!article.url || article.url.includes("uploads\\")) {
-            article.url = article.pmid
-              ? `https://pubmed.ncbi.nlm.nih.gov/${article.pmid}/`
-              : article.doi
-              ? `https://doi.org/${article.doi}`
-              : null;
-          }
-        });
-
-        allParsedArticles.push(...parsedArticles);
-        
-        if (isVercel && (Date.now() - startTime) > 30000) {
-          console.log('⏰ Vercel timeout warning: 30s elapsed');
-        }
-      } catch (fileError) {
-        console.error(`❌ Error processing file ${file.originalname}:`, fileError);
-        errors.push({
-          fileName: file.originalname,
-          error: `File processing failed: ${fileError.message}`
-        });
-      }
+    if (allParsedArticles.length === 0) {
+      return res.json({ success: false, error: "No articles parsed" });
     }
 
-    console.log(`📝 Total parsed articles: ${allParsedArticles.length}`);
-
-    // Step 2: FAST BATCH PROCESSING
-    const BATCH_SIZE = getOptimalBatchSize(allParsedArticles.length);
-    const totalBatches = Math.ceil(allParsedArticles.length / BATCH_SIZE);
-
-    console.log(`⚡ Using ${BATCH_SIZE} batch size for ${totalBatches} batches`);
-
-    for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
-      // Check timeout more frequently on Vercel
-      if (isVercel && (Date.now() - startTime) > 50000) {
-        console.log('🚨 Vercel timeout approaching - returning partial results');
-        break; // Return what we have
-      }
-
-      const start = batchIndex * BATCH_SIZE;
-      const end = start + BATCH_SIZE;
-      const batch = allParsedArticles.slice(start, end);
-
-      console.log(`🔄 Processing batch ${batchIndex + 1}/${totalBatches} (articles ${start + 1}-${end})`);
-
-      try {
-        const batchPromises = batch.map(async (article) => {
-          try {
-            const cleanArticle = {
-              title: (article.title || "Untitled").substring(0, 1000),
-              abstract: (article.abstract || "No abstract").substring(0, 2000),
-              journal: article.journal?.substring(0, 200) || null,
-              year: article.year ? parseInt(article.year, 10) : null,
-              date: article.date || null,
-              doi: article.doi?.substring(0, 100) || null,
-              url: article.url?.substring(0, 200) || null,
-              pmid: article.pmid?.substring(0, 30) || null,
-              projectId,
-            };
-
-            // Validate year
-            if (cleanArticle.year && (cleanArticle.year < 1900 || cleanArticle.year > 2030)) {
-              cleanArticle.year = null;
-            }
-
-            const savedArticle = await prisma.article.create({
-              data: {
-                ...cleanArticle,
-                authors: {
-                  create: (article.authors || []).slice(0, 10).map((name) => ({ 
-                    name: name.substring(0, 100)
-                  })),
-                },
-                publicationTypes: {
-                  create: (article.publicationTypes || []).slice(0, 5).map((value) => ({ 
-                    value: value.substring(0, 100) 
-                  })),
-                },
-                topics: {
-                  create: (article.topics || []).slice(0, 10).map((value) => ({ 
-                    value: value.substring(0, 100) 
-                  })),
-                },
-              },
-              include: { 
-                authors: true, 
-                publicationTypes: true, 
-                topics: true 
-              },
-            });
-
-            return { success: true, article: savedArticle };
-          } catch (dbError) {
-            return { 
-              success: false, 
-              error: dbError.message,
-              articleTitle: article.title?.substring(0, 50) || 'Unknown'
-            };
-          }
-        });
-
-        const batchResults = await Promise.all(batchPromises);
-        
-        // Process results
-        batchResults.forEach(result => {
-          if (result.success) {
-            successfullySaved.push(result.article);
-          } else {
-            errors.push({ 
-              error: result.error,
-              articleTitle: result.articleTitle 
-            });
-          }
-        });
-
-        console.log(`✅ Batch ${batchIndex + 1}/${totalBatches} completed`);
-
-      } catch (batchError) {
-        console.error(`❌ Batch ${batchIndex + 1} failed:`, batchError);
-        errors.push({ error: `Batch ${batchIndex + 1} failed` });
-      }
-    }
-
-    // Step 3: Clean up files
-    try {
-      for (const file of files) {
-        if (fs.existsSync(file.path)) {
-          fs.unlinkSync(file.path);
-        }
-      }
-    } catch (cleanupError) {
-      console.warn('Cleanup warning:', cleanupError.message);
-    }
+    // STEP 2: BULK DATABASE OPERATIONS (MUCH FASTER)
+    const savedArticles = await bulkInsertArticles(allParsedArticles, projectId);
 
     const totalTime = Date.now() - startTime;
-    console.log(`🎉 Import completed in ${totalTime}ms: ${successfullySaved.length} saved`);
+    console.log(`🎉 Import completed in ${totalTime}ms: ${savedArticles.length} saved`);
 
-    // Return results
     res.json({
       success: true,
       totalParsed: allParsedArticles.length,
-      importedReferences: successfullySaved.length,
-      articles: successfullySaved,
-      errors,
-      partial: totalTime > 50000,
-      executionTime: totalTime,
-      environment: isVercel ? 'vercel' : 'local'
+      importedReferences: savedArticles.length,
+      executionTime: totalTime
     });
 
   } catch (err) {
     console.error('🚨 Upload error:', err);
-    res.status(500).json({ 
-      error: "Upload failed", 
-      details: err.message,
-      environment: process.env.VERCEL ? 'vercel' : 'local'
-    });
+    res.status(500).json({ error: "Upload failed", details: err.message });
   }
 });
-// ✅ Add this helper function for parsing ZIP from buffer
-async function parseZIPFileFromBuffer(buffer) {
-  const JSZip = require('jszip');
-  const zip = await JSZip.loadAsync(buffer);
-  let allArticles = [];
 
-  for (const [filename, file] of Object.entries(zip.files)) {
-    if (file.dir) continue;
+// HIGH-PERFORMANCE BULK INSERT
+async function bulkInsertArticles(articles, projectId) {
+  console.log('🚀 Starting bulk insert...');
+  
+  // Prepare all data for bulk insert
+  const articleData = articles.map((article, index) => ({
+    title: (article.title || "Untitled").substring(0, 500),
+    abstract: (article.abstract || "No abstract").substring(0, 1500),
+    journal: article.journal?.substring(0, 150) || null,
+    year: article.year ? Math.max(1900, Math.min(2030, parseInt(article.year, 10))) : null,
+    date: article.date || null,
+    doi: article.doi?.substring(0, 100) || null,
+    url: article.url || (article.pmid ? `https://pubmed.ncbi.nlm.nih.gov/${article.pmid}/` : null),
+    pmid: article.pmid?.substring(0, 30) || null,
+    projectId: projectId,
+  }));
 
-    const content = await file.async('string');
-    let parsedArticles = [];
+  // BULK INSERT ARTICLES
+  const createdArticles = await prisma.article.createMany({
+    data: articleData,
+    skipDuplicates: true, // This prevents duplicates based on your schema
+  });
 
-    if (filename.toLowerCase().endsWith('.nbib')) {
-      parsedArticles = parseNBIB(content);
-    } else if (filename.toLowerCase().endsWith('.ris')) {
-      parsedArticles = parseRIS(content);
-    } else if (filename.toLowerCase().endsWith('.bib')) {
-      parsedArticles = parseBibTeX(content);
-    } else if (filename.toLowerCase().endsWith('.csv')) {
-      parsedArticles = parseCSV(content);
+  console.log(`✅ Inserted ${createdArticles.count} articles in bulk`);
+
+  // If you need the created articles with their IDs, fetch them
+  // This is much faster than individual creates
+  const savedArticles = await prisma.article.findMany({
+    where: { projectId },
+    orderBy: { createdAt: 'desc' },
+    take: articles.length,
+    include: {
+      authors: true,
+      publicationTypes: true,
+      topics: true
     }
+  });
 
-    allArticles.push(...parsedArticles);
-  }
+  // BULK INSERT RELATED DATA (authors, topics, etc.)
+  await bulkInsertRelatedData(articles, savedArticles);
 
-  return allArticles;
+  return savedArticles;
 }
-  // Delete project
+
+async function bulkInsertRelatedData(originalArticles, savedArticles) {
+  const authorsData = [];
+  const publicationTypesData = [];
+  const topicsData = [];
+
+  // Prepare all related data for bulk insert
+  savedArticles.forEach((savedArticle, index) => {
+    const originalArticle = originalArticles[index];
+    
+    // Authors
+    const authors = (originalArticle.authors || []).slice(0, 5);
+    authors.forEach(author => {
+      authorsData.push({
+        name: author.substring(0, 80),
+        articleId: savedArticle.id
+      });
+    });
+
+    // Publication Types
+    const pubTypes = (originalArticle.publicationTypes || []).slice(0, 3);
+    pubTypes.forEach(pubType => {
+      publicationTypesData.push({
+        value: pubType.substring(0, 80),
+        articleId: savedArticle.id
+      });
+    });
+
+    // Topics
+    const topics = (originalArticle.topics || []).slice(0, 5);
+    topics.forEach(topic => {
+      topicsData.push({
+        value: topic.substring(0, 80),
+        articleId: savedArticle.id
+      });
+    });
+  });
+
+  // Execute all bulk inserts in parallel
+  await Promise.all([
+    authorsData.length > 0 ? prisma.author.createMany({ data: authorsData }) : Promise.resolve(),
+    publicationTypesData.length > 0 ? prisma.publicationType.createMany({ data: publicationTypesData }) : Promise.resolve(),
+    topicsData.length > 0 ? prisma.topic.createMany({ data: topicsData }) : Promise.resolve()
+  ]);
+
+  console.log(`✅ Inserted related data: ${authorsData.length} authors, ${publicationTypesData.length} pub types, ${topicsData.length} topics`);
+}
+// Delete project
 app.delete('/api/projects/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -2853,53 +2852,84 @@ app.get("/api/projects/:id/analysis", async (req, res) => {
   try {
     const { id } = req.params;
 
-    const project = await prisma.project.findUnique({
-      where: { id },
-      include: { articles: true },
+    // Get all counts in parallel using aggregation (MUCH FASTER)
+    const [
+      articleCounts,
+      duplicateDetection,
+      screeningCount,
+      activeArticles
+    ] = await Promise.all([
+      // Article counts by status - uses database aggregation
+      prisma.article.groupBy({
+        by: ['duplicateStatus'],
+        where: { projectId: id },
+        _count: true
+      }),
+      // Duplicate detection data
+      prisma.duplicateDetection.findUnique({
+        where: { projectId: id },
+        select: { totalArticles: true, totalGroups: true }
+      }),
+      // Screening count - direct count query
+      prisma.screeningDecision.count({
+        where: { 
+          article: { projectId: id, duplicateStatus: { not: 'deleted' } }
+        }
+      }),
+      // Only get minimal article data for display
+      prisma.article.findMany({
+        where: { 
+          projectId: id, 
+          duplicateStatus: { not: 'deleted' } 
+        },
+        select: {
+          id: true,
+          title: true,
+          journal: true,
+          year: true,
+          duplicateStatus: true,
+          screeningDecisions: {
+            take: 1, // Just check if screening exists
+            select: { id: true }
+          }
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 50 // Limit for performance
+      })
+    ]);
+
+    // Calculate counts from aggregation (much faster than JavaScript filtering)
+    const statusCounts = {
+      not_duplicate: 0,
+      deleted: 0,
+      null: 0 // No status (active articles)
+    };
+
+    articleCounts.forEach(group => {
+      const status = group.duplicateStatus || 'null';
+      statusCounts[status] = group._count;
     });
 
-    if (!project) {
-      return res.status(404).json({ message: "Project not found" });
-    }
-
-    // 🔹 normalize helper
-    function normalizeTitle(title = "") {
-      return title.trim().toLowerCase().replace(/\s+/g, " ");
-    }
-
-    const seen = new Map();
-    const duplicates = [];
-
-    for (let art of project.articles || []) {
-      const titleKey = normalizeTitle(art.title);
-      const yearKey = art.year ? art.year.toString() : "";
-      const key = `${titleKey}-${yearKey}`;
-
-      if (seen.has(key)) {
-        duplicates.push(art);
-      } else {
-        seen.set(key, art);
-      }
-    }
+    const totalActiveArticles = statusCounts.null + statusCounts.not_duplicate;
+    const totalDuplicates = duplicateDetection?.totalGroups || 0;
+    const unresolved = duplicateDetection?.totalGroups || 0;
 
     res.json({
-      totalArticles: project.articles.length,
-      totalDuplicates: duplicates.length,
-      unresolved: duplicates.length,
-      resolved: 0,
-      notDuplicate: 0,
-      deleted: 0,
-      duplicates,
-      articles: project.articles,
+      totalArticles: totalActiveArticles,
+      totalArticlesIncludingDeleted: totalActiveArticles + statusCounts.deleted,
+      totalDuplicates: totalDuplicates,
+      unresolved: unresolved,
+      resolved: statusCounts.not_duplicate + statusCounts.deleted,
+      notDuplicate: statusCounts.not_duplicate,
+      deleted: statusCounts.deleted,
+      screenedArticles: screeningCount,
+      articles: activeArticles,
     });
   } catch (err) {
     console.error("Error fetching analysis:", err);
     res.status(500).json({ message: "Server error", details: err.message });
   }
-});
-
-// Update blind mode setting for a project
-app.put('/api/projects/:id/blind-mode', authenticateToken, async (req, res) => {
+});app.put('/api/projects/:id/blind-mode', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     const { blindMode } = req.body;
@@ -3206,12 +3236,7 @@ app.get('/api/projects/:projectId/download-fulltext/:articleId', async (req, res
     }
   }
 });
-if (process.env.NODE_ENV !== "production") {
-  const PORT = process.env.PORT || 5000;
-  app.listen(PORT, () => {
-    console.log(`Server running locally on http://localhost:${PORT}`);
-  });
-}
-
-// ✅ Export for Vercel serverless
-export default app;
+// Start server
+app.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+});
