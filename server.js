@@ -13,7 +13,9 @@ import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import { URL } from 'url';
 import AdmZip from 'adm-zip';
+import busboy from 'busboy';
 import duplicatesRoutes from './routes/duplicates.js';
+import { put } from '@vercel/blob';
 
 const transporter = nodemailer.createTransport({
   service: "gmail",
@@ -24,7 +26,6 @@ const transporter = nodemailer.createTransport({
     pass: process.env.EMAIL_PASS,
   },
 });
-
 
 transporter.verify((error, success) => {
   if (error) {
@@ -37,9 +38,18 @@ transporter.verify((error, success) => {
 const prisma = new PrismaClient();
 const app = express();
 
+
+
 // Middlewares
 app.use(cors({
-  origin: 'https://kior.vercel.app',
+  origin: ['https://kior.vercel.app', 'http://localhost:5173'], // Array with brackets
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+app.options(/.*/, cors({
+  origin: ['https://kior.vercel.app', 'http://localhost:5173'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -72,7 +82,8 @@ const authenticateToken = (req, res, next) => {
     next();
   });
 };
-
+// const uploadDir = path.join(process.cwd(), "uploads");
+// Conditional storage based on environment
 const isDevelopment = process.env.NODE_ENV !== 'production';
 
 // Only create upload directory in development
@@ -85,7 +96,7 @@ if (isDevelopment) {
 
 app.use('/api/duplicates', authenticateToken, duplicatesRoutes);
 
-// ✅ Multer config
+// ✅ Multer config - use memory storage on Vercel
 const storage = isDevelopment 
   ? multer.diskStorage({
       destination: (req, file, cb) => {
@@ -114,8 +125,7 @@ const upload = multer({
   }
 });
 
-
-// ✅ Upload route
+// ✅ Upload route - handle both disk and memory storage
 app.post("/upload", upload.single("file"), (req, res) => {
   console.log("File uploaded:", req.file);
   
@@ -134,6 +144,8 @@ app.post("/upload", upload.single("file"), (req, res) => {
     }
   });
 });
+
+// PDF upload configuration
 const pdfStorage = isDevelopment
   ? multer.diskStorage({
       destination: (req, file, cb) => {
@@ -166,6 +178,7 @@ const uploadPDF = multer({
 function normalizeTitle(title = "") {
   return title.trim().toLowerCase().replace(/\s+/g, " ");
 }
+
 
 function detectDuplicatesByTitleYear(articles) {
   // articles: array of { id, title, year, ... }
@@ -559,6 +572,8 @@ app.get('/health', (req, res) => {
     activeProjects: projectClients.size
   });
 });
+
+
 
 // --- end helpers ---
 function parseNBIB(content) {
@@ -1598,8 +1613,6 @@ app.post('/api/projects', authenticateToken, async (req, res) => {
   }
 });
 
-// Get specific project
-// Get specific project - UPDATED VERSION
 app.get('/api/projects/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1704,8 +1717,7 @@ app.get('/api/projects/:id', authenticateToken, async (req, res) => {
     console.error('Error fetching project:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
-});
-// Update project
+});// Update project
 app.put('/api/projects/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1954,8 +1966,6 @@ app.post('/api/invite/complete', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
-// Add this at the top with your other imports/constants
-const screeningCache = new Map();
 // Get collaborative screening data for a project
 app.get('/api/projects/:projectId/screening-data', authenticateToken, async (req, res) => {
   try {
@@ -2138,6 +2148,7 @@ async function saveDecisionToDatabase(projectId, userId, articleId, status, note
     console.log('Background save failed (non-critical):', error.message);
   }
 }
+// Add this to your backend routes
 app.get('/api/projects/:projectId/check-access', authenticateToken, async (req, res) => {
   try {
     const { projectId } = req.params;
@@ -2396,88 +2407,7 @@ app.get('/api/projects/:projectId/team-stats', authenticateToken, async (req, re
     });
   }
 });
-// Debug endpoint to check import issues
-app.post("/api/projects/:projectId/debug-import", async (req, res) => {
-  try {
-    const { projectId } = req.params;
-    const { content } = req.body; // Send the .nbib content directly
 
-    console.log("🔍 DEBUG: Starting import analysis...");
-    console.log("📄 Content length:", content.length);
-    console.log("📁 Project ID:", projectId);
-
-    // Parse the NBIB content
-    const parsedArticles = parseNBIB(content);
-    console.log("📊 Parsed articles:", parsedArticles.length);
-
-    // Check for parsing issues
-    const articlesWithTitles = parsedArticles.filter(a => a.title && a.title.trim());
-    const articlesWithAuthors = parsedArticles.filter(a => a.authors && a.authors.length > 0);
-    
-    console.log("📝 Articles with titles:", articlesWithTitles.length);
-    console.log("👥 Articles with authors:", articlesWithAuthors.length);
-
-    // Try to import first 5 articles to see if there are database errors
-    const sampleArticles = parsedArticles.slice(0, 5);
-    const importResults = [];
-
-    for (const articleData of sampleArticles) {
-      try {
-        console.log("💾 Attempting to save:", articleData.title?.substring(0, 50) + "...");
-        
-        const article = await prisma.article.create({
-          data: {
-            title: articleData.title || "Untitled",
-            abstract: articleData.abstract,
-            journal: articleData.journal,
-            year: articleData.year,
-            doi: articleData.doi,
-            pmid: articleData.pmid,
-            url: articleData.url,
-            projectId: projectId,
-            authors: {
-              create: articleData.authors.map(name => ({ name }))
-            },
-            publicationTypes: {
-              create: articleData.publicationTypes.map(value => ({ value }))
-            },
-            topics: {
-              create: articleData.topics.map(value => ({ value }))
-            }
-          }
-        });
-        
-        importResults.push({ success: true, title: articleData.title, id: article.id });
-        console.log("✅ Successfully saved:", article.id);
-        
-      } catch (error) {
-        console.error("❌ Failed to save:", error.message);
-        importResults.push({ 
-          success: false, 
-          title: articleData.title, 
-          error: error.message 
-        });
-      }
-    }
-
-    res.json({
-      parsedCount: parsedArticles.length,
-      withTitles: articlesWithTitles.length,
-      withAuthors: articlesWithAuthors.length,
-      sampleImport: importResults,
-      firstFewArticles: parsedArticles.slice(0, 3).map(a => ({
-        title: a.title,
-        authors: a.authors,
-        year: a.year,
-        journal: a.journal
-      }))
-    });
-
-  } catch (error) {
-    console.error("❌ Debug import error:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
 // Start a screening session (FIXED)
 app.post('/api/projects/:projectId/screening-sessions/start', authenticateToken, async (req, res) => {
   try {
@@ -2813,7 +2743,7 @@ async function bulkInsertRelatedData(originalArticles, savedArticles) {
 
   console.log(`✅ Inserted related data: ${authorsData.length} authors, ${publicationTypesData.length} pub types, ${topicsData.length} topics`);
 }
-// Delete project
+  // Delete project
 app.delete('/api/projects/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -2866,84 +2796,53 @@ app.get("/api/projects/:id/analysis", async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Get all counts in parallel using aggregation (MUCH FASTER)
-    const [
-      articleCounts,
-      duplicateDetection,
-      screeningCount,
-      activeArticles
-    ] = await Promise.all([
-      // Article counts by status - uses database aggregation
-      prisma.article.groupBy({
-        by: ['duplicateStatus'],
-        where: { projectId: id },
-        _count: true
-      }),
-      // Duplicate detection data
-      prisma.duplicateDetection.findUnique({
-        where: { projectId: id },
-        select: { totalArticles: true, totalGroups: true }
-      }),
-      // Screening count - direct count query
-      prisma.screeningDecision.count({
-        where: { 
-          article: { projectId: id, duplicateStatus: { not: 'deleted' } }
-        }
-      }),
-      // Only get minimal article data for display
-      prisma.article.findMany({
-        where: { 
-          projectId: id, 
-          duplicateStatus: { not: 'deleted' } 
-        },
-        select: {
-          id: true,
-          title: true,
-          journal: true,
-          year: true,
-          duplicateStatus: true,
-          screeningDecisions: {
-            take: 1, // Just check if screening exists
-            select: { id: true }
-          }
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 50 // Limit for performance
-      })
-    ]);
-
-    // Calculate counts from aggregation (much faster than JavaScript filtering)
-    const statusCounts = {
-      not_duplicate: 0,
-      deleted: 0,
-      null: 0 // No status (active articles)
-    };
-
-    articleCounts.forEach(group => {
-      const status = group.duplicateStatus || 'null';
-      statusCounts[status] = group._count;
+    const project = await prisma.project.findUnique({
+      where: { id },
+      include: { articles: true },
     });
 
-    const totalActiveArticles = statusCounts.null + statusCounts.not_duplicate;
-    const totalDuplicates = duplicateDetection?.totalGroups || 0;
-    const unresolved = duplicateDetection?.totalGroups || 0;
+    if (!project) {
+      return res.status(404).json({ message: "Project not found" });
+    }
+
+    // 🔹 normalize helper
+    function normalizeTitle(title = "") {
+      return title.trim().toLowerCase().replace(/\s+/g, " ");
+    }
+
+    const seen = new Map();
+    const duplicates = [];
+
+    for (let art of project.articles || []) {
+      const titleKey = normalizeTitle(art.title);
+      const yearKey = art.year ? art.year.toString() : "";
+      const key = `${titleKey}-${yearKey}`;
+
+      if (seen.has(key)) {
+        duplicates.push(art);
+      } else {
+        seen.set(key, art);
+      }
+    }
 
     res.json({
-      totalArticles: totalActiveArticles,
-      totalArticlesIncludingDeleted: totalActiveArticles + statusCounts.deleted,
-      totalDuplicates: totalDuplicates,
-      unresolved: unresolved,
-      resolved: statusCounts.not_duplicate + statusCounts.deleted,
-      notDuplicate: statusCounts.not_duplicate,
-      deleted: statusCounts.deleted,
-      screenedArticles: screeningCount,
-      articles: activeArticles,
+      totalArticles: project.articles.length,
+      totalDuplicates: duplicates.length,
+      unresolved: duplicates.length,
+      resolved: 0,
+      notDuplicate: 0,
+      deleted: 0,
+      duplicates,
+      articles: project.articles,
     });
   } catch (err) {
     console.error("Error fetching analysis:", err);
     res.status(500).json({ message: "Server error", details: err.message });
   }
-});app.put('/api/projects/:id/blind-mode', authenticateToken, async (req, res) => {
+});
+
+// Update blind mode setting for a project
+app.put('/api/projects/:id/blind-mode', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     const { blindMode } = req.body;
@@ -3250,7 +3149,6 @@ app.get('/api/projects/:projectId/download-fulltext/:articleId', async (req, res
     }
   }
 });
-// Start server
 if (process.env.NODE_ENV !== "production") {
   const PORT = process.env.PORT || 5000;
   app.listen(PORT, () => {
