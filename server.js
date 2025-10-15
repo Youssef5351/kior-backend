@@ -40,21 +40,12 @@ const app = express();
 
 
 
-// Middlewares
 app.use(cors({
-  origin: ['https://kior.vercel.app', 'http://localhost:5173'], // Array with brackets
+  origin: 'https://kior.vercel.app',
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-
-app.options(/.*/, cors({
-  origin: ['https://kior.vercel.app', 'http://localhost:5173'],
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
 app.use(express.json());
 
 // Secret key for JWT
