@@ -46,7 +46,7 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(express.json());
+app.use(express.json({ limit: '100mb' }));
 
 // Secret key for JWT
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -73,8 +73,6 @@ const authenticateToken = (req, res, next) => {
     next();
   });
 };
-// const uploadDir = path.join(process.cwd(), "uploads");
-// Conditional storage based on environment
 const isDevelopment = process.env.NODE_ENV !== 'production';
 
 // Only create upload directory in development
@@ -112,7 +110,7 @@ const upload = multer({
     }
   },
   limits: {
-    fileSize: 50 * 1024 * 1024, // 50MB limit
+    fileSize: 100 * 1024 * 1024, // 50MB limit
   }
 });
 
