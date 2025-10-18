@@ -11,7 +11,7 @@ import crypto from "crypto";
 import fs from "fs";
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
-import { URL } from 'url';
+import { URL } from 'node:url';
 import AdmZip from 'adm-zip';
 import busboy from 'busboy';
 import duplicatesRoutes from './routes/duplicates.js';
