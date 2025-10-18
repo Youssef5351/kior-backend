@@ -2570,75 +2570,116 @@ app.post('/api/projects/:projectId/page-views', authenticateToken, async (req, r
     res.status(500).json({ error: 'Failed to track page view' });
   }
 });
-app.post("/api/projects/:id/upload", upload.array("files"), async (req, res) => {
+app.post("/api/projects/:id/upload", async (req, res) => {
   const startTime = Date.now();
   const { id: projectId } = req.params;
-  const files = req.files;
-
-  if (!files || files.length === 0) {
-    return res.status(400).json({ error: "No files uploaded" });
-  }
 
   try {
-    console.log(`📁 Processing ${files.length} files`);
+    // Use busboy to parse multipart form data
+    const bb = busboy({ headers: req.headers });
+    const files = [];
 
-    // STEP 1: FAST PARALLEL PARSING
-    const parseResults = await Promise.all(
-      files.map(async (file) => {
+    bb.on('file', async (fieldname, file, info) => {
+      const chunks = [];
+
+      file.on('data', (data) => {
+        chunks.push(data);
+      });
+
+      file.on('end', async () => {
+        const buffer = Buffer.concat(chunks);
+        const fileName = `${projectId}-${Date.now()}-${info.filename}`;
+
         try {
-          const filePath = path.resolve(file.path);
-          const content = fs.readFileSync(filePath, "utf8");
-          let parsedArticles = [];
+          // Upload to Vercel Blob
+          const blob = await put(fileName, buffer, {
+            access: 'private',
+          });
 
-          if (file.originalname.toLowerCase().endsWith(".nbib")) {
-            parsedArticles = parseNBIB(content);
-          } else if (file.originalname.toLowerCase().endsWith(".ris")) {
-            parsedArticles = parseRIS(content);
-          } else if (file.originalname.toLowerCase().endsWith(".bib")) {
-            parsedArticles = parseBibTeX(content);
-          } else if (file.originalname.toLowerCase().endsWith(".csv")) {
-            parsedArticles = parseCSV(content);
-          } else {
-            throw new Error("Unsupported format");
-          }
-
-          // Clean up file immediately after parsing
-          if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
-
-          return { success: true, articles: parsedArticles };
+          files.push({
+            originalname: info.filename,
+            buffer: buffer,
+            mimetype: info.mimetype,
+            size: buffer.length,
+            blobUrl: blob.url
+          });
         } catch (error) {
-          return { success: false, error: error.message };
+          console.error('Blob upload error:', error);
         }
-      })
-    );
-
-    // Combine all articles
-    const allParsedArticles = parseResults
-      .filter(result => result.success)
-      .flatMap(result => result.articles);
-
-    console.log(`📝 Parsed ${allParsedArticles.length} articles in ${Date.now() - startTime}ms`);
-
-    if (allParsedArticles.length === 0) {
-      return res.json({ success: false, error: "No articles parsed" });
-    }
-
-    // STEP 2: BULK DATABASE OPERATIONS (MUCH FASTER)
-    const savedArticles = await bulkInsertArticles(allParsedArticles, projectId);
-
-    const totalTime = Date.now() - startTime;
-    console.log(`🎉 Import completed in ${totalTime}ms: ${savedArticles.length} saved`);
-
-    res.json({
-      success: true,
-      totalParsed: allParsedArticles.length,
-      importedReferences: savedArticles.length,
-      executionTime: totalTime
+      });
     });
 
+    bb.on('close', async () => {
+      try {
+        if (!files || files.length === 0) {
+          return res.status(400).json({ error: "No files uploaded" });
+        }
+
+        console.log(`📁 Processing ${files.length} files`);
+
+        // STEP 1: FAST PARALLEL PARSING
+        const parseResults = await Promise.all(
+          files.map(async (file) => {
+            try {
+              const content = file.buffer.toString("utf8");
+              let parsedArticles = [];
+
+              if (file.originalname.toLowerCase().endsWith(".nbib")) {
+                parsedArticles = parseNBIB(content);
+              } else if (file.originalname.toLowerCase().endsWith(".ris")) {
+                parsedArticles = parseRIS(content);
+              } else if (file.originalname.toLowerCase().endsWith(".bib")) {
+                parsedArticles = parseBibTeX(content);
+              } else if (file.originalname.toLowerCase().endsWith(".csv")) {
+                parsedArticles = parseCSV(content);
+              } else if (file.originalname.toLowerCase().endsWith(".zip")) {
+                parsedArticles = await parseZIP(file.buffer);
+              } else {
+                throw new Error("Unsupported format");
+              }
+
+              return { success: true, articles: parsedArticles };
+            } catch (error) {
+              return { success: false, error: error.message };
+            }
+          })
+        );
+
+        // Combine all articles
+        const allParsedArticles = parseResults
+          .filter(result => result.success)
+          .flatMap(result => result.articles);
+
+        console.log(`📝 Parsed ${allParsedArticles.length} articles in ${Date.now() - startTime}ms`);
+
+        if (allParsedArticles.length === 0) {
+          return res.json({ success: false, error: "No articles parsed" });
+        }
+
+        // STEP 2: BULK DATABASE OPERATIONS (MUCH FASTER)
+        const savedArticles = await bulkInsertArticles(allParsedArticles, projectId);
+
+        const totalTime = Date.now() - startTime;
+        console.log(`🎉 Import completed in ${totalTime}ms: ${savedArticles.length} saved`);
+
+        res.json({
+          success: true,
+          totalParsed: allParsedArticles.length,
+          importedReferences: savedArticles.length,
+          executionTime: totalTime
+        });
+
+      } catch (err) {
+        console.error('🚨 Upload error:', err);
+        res.status(500).json({ error: "Upload failed", details: err.message });
+      }
+    });
+
+    bb.end(req.rawBody || Buffer.from(''));
+
   } catch (err) {
-    console.error('🚨 Upload error:', err);
-    res.status(500).json({ error: "Upload failed", details: err.message });
+    console.error('🚨 Request parsing error:', err);
+    res.status(500).json({ error: "Request parsing failed", details: err.message });
   }
 });
 
@@ -2647,7 +2688,7 @@ async function bulkInsertArticles(articles, projectId) {
   console.log('🚀 Starting bulk insert...');
   
   // Prepare all data for bulk insert
-  const articleData = articles.map((article, index) => ({
+  const articleData = articles.map((article) => ({
     title: (article.title || "Untitled").substring(0, 500),
     abstract: (article.abstract || "No abstract").substring(0, 1500),
     journal: article.journal?.substring(0, 150) || null,
@@ -2662,13 +2703,12 @@ async function bulkInsertArticles(articles, projectId) {
   // BULK INSERT ARTICLES
   const createdArticles = await prisma.article.createMany({
     data: articleData,
-    skipDuplicates: true, // This prevents duplicates based on your schema
+    skipDuplicates: true,
   });
 
   console.log(`✅ Inserted ${createdArticles.count} articles in bulk`);
 
-  // If you need the created articles with their IDs, fetch them
-  // This is much faster than individual creates
+  // Fetch the created articles with their IDs
   const savedArticles = await prisma.article.findMany({
     where: { projectId },
     orderBy: { createdAt: 'desc' },
@@ -2680,7 +2720,7 @@ async function bulkInsertArticles(articles, projectId) {
     }
   });
 
-  // BULK INSERT RELATED DATA (authors, topics, etc.)
+  // BULK INSERT RELATED DATA
   await bulkInsertRelatedData(articles, savedArticles);
 
   return savedArticles;
@@ -2731,8 +2771,7 @@ async function bulkInsertRelatedData(originalArticles, savedArticles) {
   ]);
 
   console.log(`✅ Inserted related data: ${authorsData.length} authors, ${publicationTypesData.length} pub types, ${topicsData.length} topics`);
-}
-  // Delete project
+}  // Delete project
 app.delete('/api/projects/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
