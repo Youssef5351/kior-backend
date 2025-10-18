@@ -98,7 +98,7 @@ const storage = isDevelopment
   : multer.memoryStorage(); // Memory storage for Vercel
 
 const upload = multer({
-  storage: storage,
+  storage: multer.memoryStorage(),
   fileFilter: (req, file, cb) => {
     const allowedExtensions = ['.nbib', '.ris', '.bib', '.zip', '.csv', '.enw', '.xml', '.ciw'];
     const fileExt = path.extname(file.originalname).toLowerCase();
@@ -106,14 +106,13 @@ const upload = multer({
     if (allowedExtensions.includes(fileExt)) {
       cb(null, true);
     } else {
-      cb(new Error(`Unsupported file type: ${fileExt}. Only ${allowedExtensions.join(', ')} are allowed.`), false);
+      cb(new Error(`Unsupported file type: ${fileExt}`), false);
     }
   },
   limits: {
-    fileSize: 100 * 1024 * 1024, // 50MB limit
+    fileSize: 100 * 1024 * 1024, // 100MB
   }
 });
-
 // ✅ Upload route - handle both disk and memory storage
 app.post("/upload", upload.single("file"), (req, res) => {
   console.log("File uploaded:", req.file);
@@ -2570,116 +2569,88 @@ app.post('/api/projects/:projectId/page-views', authenticateToken, async (req, r
     res.status(500).json({ error: 'Failed to track page view' });
   }
 });
-app.post("/api/projects/:id/upload", async (req, res) => {
+app.post("/api/projects/:id/upload", authenticateToken, upload.array("files"), async (req, res) => {
   const startTime = Date.now();
   const { id: projectId } = req.params;
+  const files = req.files;
+
+  if (!files || files.length === 0) {
+    return res.status(400).json({ error: "No files uploaded" });
+  }
 
   try {
-    // Use busboy to parse multipart form data
-    const bb = busboy({ headers: req.headers });
-    const files = [];
+    console.log(`📁 Processing ${files.length} files`);
 
-    bb.on('file', async (fieldname, file, info) => {
-      const chunks = [];
-
-      file.on('data', (data) => {
-        chunks.push(data);
-      });
-
-      file.on('end', async () => {
-        const buffer = Buffer.concat(chunks);
-        const fileName = `${projectId}-${Date.now()}-${info.filename}`;
-
+    // STEP 1: FAST PARALLEL PARSING
+    const parseResults = await Promise.all(
+      files.map(async (file) => {
         try {
-          // Upload to Vercel Blob
-          const blob = await put(fileName, buffer, {
-            access: 'private',
-          });
+          // File is already in memory (req.files[i].buffer)
+          const content = file.buffer.toString("utf8");
+          let parsedArticles = [];
 
-          files.push({
-            originalname: info.filename,
-            buffer: buffer,
-            mimetype: info.mimetype,
-            size: buffer.length,
-            blobUrl: blob.url
-          });
+          if (file.originalname.toLowerCase().endsWith(".nbib")) {
+            parsedArticles = parseNBIB(content);
+          } else if (file.originalname.toLowerCase().endsWith(".ris")) {
+            parsedArticles = parseRIS(content);
+          } else if (file.originalname.toLowerCase().endsWith(".bib")) {
+            parsedArticles = parseBibTeX(content);
+          } else if (file.originalname.toLowerCase().endsWith(".csv")) {
+            parsedArticles = parseCSV(content);
+          } else if (file.originalname.toLowerCase().endsWith(".zip")) {
+            parsedArticles = await parseZIP(file.buffer);
+          } else {
+            throw new Error("Unsupported format");
+          }
+
+          return { success: true, articles: parsedArticles };
         } catch (error) {
-          console.error('Blob upload error:', error);
+          return { success: false, error: error.message };
         }
-      });
-    });
+      })
+    );
 
-    bb.on('close', async () => {
+    // Combine all articles
+    const allParsedArticles = parseResults
+      .filter(result => result.success)
+      .flatMap(result => result.articles);
+
+    console.log(`📝 Parsed ${allParsedArticles.length} articles in ${Date.now() - startTime}ms`);
+
+    if (allParsedArticles.length === 0) {
+      return res.json({ success: false, error: "No articles parsed" });
+    }
+
+    // STEP 2: BULK DATABASE OPERATIONS (MUCH FASTER)
+    const savedArticles = await bulkInsertArticles(allParsedArticles, projectId);
+
+    // STEP 3: UPLOAD FILES TO VERCEL BLOB (optional, for archiving)
+    const uploadPromises = files.map(async (file) => {
       try {
-        if (!files || files.length === 0) {
-          return res.status(400).json({ error: "No files uploaded" });
-        }
-
-        console.log(`📁 Processing ${files.length} files`);
-
-        // STEP 1: FAST PARALLEL PARSING
-        const parseResults = await Promise.all(
-          files.map(async (file) => {
-            try {
-              const content = file.buffer.toString("utf8");
-              let parsedArticles = [];
-
-              if (file.originalname.toLowerCase().endsWith(".nbib")) {
-                parsedArticles = parseNBIB(content);
-              } else if (file.originalname.toLowerCase().endsWith(".ris")) {
-                parsedArticles = parseRIS(content);
-              } else if (file.originalname.toLowerCase().endsWith(".bib")) {
-                parsedArticles = parseBibTeX(content);
-              } else if (file.originalname.toLowerCase().endsWith(".csv")) {
-                parsedArticles = parseCSV(content);
-              } else if (file.originalname.toLowerCase().endsWith(".zip")) {
-                parsedArticles = await parseZIP(file.buffer);
-              } else {
-                throw new Error("Unsupported format");
-              }
-
-              return { success: true, articles: parsedArticles };
-            } catch (error) {
-              return { success: false, error: error.message };
-            }
-          })
-        );
-
-        // Combine all articles
-        const allParsedArticles = parseResults
-          .filter(result => result.success)
-          .flatMap(result => result.articles);
-
-        console.log(`📝 Parsed ${allParsedArticles.length} articles in ${Date.now() - startTime}ms`);
-
-        if (allParsedArticles.length === 0) {
-          return res.json({ success: false, error: "No articles parsed" });
-        }
-
-        // STEP 2: BULK DATABASE OPERATIONS (MUCH FASTER)
-        const savedArticles = await bulkInsertArticles(allParsedArticles, projectId);
-
-        const totalTime = Date.now() - startTime;
-        console.log(`🎉 Import completed in ${totalTime}ms: ${savedArticles.length} saved`);
-
-        res.json({
-          success: true,
-          totalParsed: allParsedArticles.length,
-          importedReferences: savedArticles.length,
-          executionTime: totalTime
-        });
-
-      } catch (err) {
-        console.error('🚨 Upload error:', err);
-        res.status(500).json({ error: "Upload failed", details: err.message });
+        const fileName = `projects/${projectId}/${Date.now()}-${file.originalname}`;
+        await put(fileName, file.buffer, { access: 'private' });
+        console.log(`✅ Uploaded ${file.originalname} to Vercel Blob`);
+      } catch (error) {
+        console.error(`⚠️ Blob upload failed for ${file.originalname}:`, error.message);
+        // Don't fail the whole request if blob upload fails
       }
     });
 
-    bb.end(req.rawBody || Buffer.from(''));
+    await Promise.all(uploadPromises);
+
+    const totalTime = Date.now() - startTime;
+    console.log(`🎉 Import completed in ${totalTime}ms: ${savedArticles.length} saved`);
+
+    res.json({
+      success: true,
+      totalParsed: allParsedArticles.length,
+      importedReferences: savedArticles.length,
+      executionTime: totalTime
+    });
 
   } catch (err) {
-    console.error('🚨 Request parsing error:', err);
-    res.status(500).json({ error: "Request parsing failed", details: err.message });
+    console.error('🚨 Upload error:', err);
+    res.status(500).json({ error: "Upload failed", details: err.message });
   }
 });
 
@@ -2687,7 +2658,6 @@ app.post("/api/projects/:id/upload", async (req, res) => {
 async function bulkInsertArticles(articles, projectId) {
   console.log('🚀 Starting bulk insert...');
   
-  // Prepare all data for bulk insert
   const articleData = articles.map((article) => ({
     title: (article.title || "Untitled").substring(0, 500),
     abstract: (article.abstract || "No abstract").substring(0, 1500),
@@ -2700,7 +2670,6 @@ async function bulkInsertArticles(articles, projectId) {
     projectId: projectId,
   }));
 
-  // BULK INSERT ARTICLES
   const createdArticles = await prisma.article.createMany({
     data: articleData,
     skipDuplicates: true,
@@ -2708,7 +2677,6 @@ async function bulkInsertArticles(articles, projectId) {
 
   console.log(`✅ Inserted ${createdArticles.count} articles in bulk`);
 
-  // Fetch the created articles with their IDs
   const savedArticles = await prisma.article.findMany({
     where: { projectId },
     orderBy: { createdAt: 'desc' },
@@ -2720,7 +2688,6 @@ async function bulkInsertArticles(articles, projectId) {
     }
   });
 
-  // BULK INSERT RELATED DATA
   await bulkInsertRelatedData(articles, savedArticles);
 
   return savedArticles;
@@ -2731,11 +2698,9 @@ async function bulkInsertRelatedData(originalArticles, savedArticles) {
   const publicationTypesData = [];
   const topicsData = [];
 
-  // Prepare all related data for bulk insert
   savedArticles.forEach((savedArticle, index) => {
     const originalArticle = originalArticles[index];
     
-    // Authors
     const authors = (originalArticle.authors || []).slice(0, 5);
     authors.forEach(author => {
       authorsData.push({
@@ -2744,7 +2709,6 @@ async function bulkInsertRelatedData(originalArticles, savedArticles) {
       });
     });
 
-    // Publication Types
     const pubTypes = (originalArticle.publicationTypes || []).slice(0, 3);
     pubTypes.forEach(pubType => {
       publicationTypesData.push({
@@ -2753,7 +2717,6 @@ async function bulkInsertRelatedData(originalArticles, savedArticles) {
       });
     });
 
-    // Topics
     const topics = (originalArticle.topics || []).slice(0, 5);
     topics.forEach(topic => {
       topicsData.push({
@@ -2763,7 +2726,6 @@ async function bulkInsertRelatedData(originalArticles, savedArticles) {
     });
   });
 
-  // Execute all bulk inserts in parallel
   await Promise.all([
     authorsData.length > 0 ? prisma.author.createMany({ data: authorsData }) : Promise.resolve(),
     publicationTypesData.length > 0 ? prisma.publicationType.createMany({ data: publicationTypesData }) : Promise.resolve(),
@@ -2771,7 +2733,8 @@ async function bulkInsertRelatedData(originalArticles, savedArticles) {
   ]);
 
   console.log(`✅ Inserted related data: ${authorsData.length} authors, ${publicationTypesData.length} pub types, ${topicsData.length} topics`);
-}  // Delete project
+}
+  // Delete project
 app.delete('/api/projects/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
