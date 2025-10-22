@@ -3140,12 +3140,15 @@ app.get('/api/projects/:projectId/download-fulltext/:articleId', async (req, res
     }
   }
 });
-if (process.env.NODE_ENV !== "production") {
-  const PORT = process.env.PORT || 5000;
-  app.listen(PORT, () => {
+const PORT = process.env.PORT || 5000;
+
+app.listen(PORT, () => {
+  if (process.env.NODE_ENV !== "production") {
     console.log(`Server running locally on http://localhost:${PORT}`);
-  });
-}
+  } else {
+    console.log(`✅ Server is running in production mode on port ${PORT}`);
+  }
+});
 
 // ✅ Export for Vercel serverless
 export default app;
