@@ -3140,7 +3140,7 @@ app.get('/api/projects/:projectId/download-fulltext/:articleId', async (req, res
     }
   }
 });
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 8080;
 
 app.listen(PORT, () => {
   if (process.env.NODE_ENV !== "production") {
