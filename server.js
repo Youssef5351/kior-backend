@@ -302,15 +302,42 @@ const wsUrl = `${wsProtocol}://kior-backend4-youssefelkoumi512-dev.apps.rm1.0a51
     console.error('Failed to create WebSocket connection:', error);
   }
 };
-const server = createServer(app);
+const server = http.createServer(app);
 
-// Create WebSocket server
-const wss = new WebSocketServer({ server });
+// Create WebSocket server with NO SERVER
+const wss = new WebSocket.Server({ noServer: true });
 const clients = new Map();
-const projectClients = new Map(); // Map of projectId -> Set of clients
+const projectClients = new Map();
 
 console.log('🚀 WebSocket server initializing...');
 
+// ADD THIS: Handle WebSocket upgrade requests manually
+server.on('upgrade', (request, socket, head) => {
+  console.log('🔌 WebSocket upgrade request:', request.url);
+  
+  try {
+    const url = new URL(request.url, `http://${request.headers.host}`);
+    const projectId = url.searchParams.get('projectId');
+    const userId = url.searchParams.get('userId');
+    const token = url.searchParams.get('token');
+    
+    console.log('Upgrade params:', { projectId, userId, hasToken: !!token });
+    
+    if (projectId && userId && token) {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request);
+      });
+    } else {
+      console.log('❌ Missing parameters - destroying socket');
+      socket.destroy();
+    }
+  } catch (error) {
+    console.error('❌ Upgrade error:', error);
+    socket.destroy();
+  }
+});
+
+// Your existing wss.on('connection') code stays the SAME
 wss.on('connection', (ws, request) => {
   console.log('🔌 New WebSocket connection attempt');
   
@@ -421,6 +448,7 @@ wss.on('connection', (ws, request) => {
   }
 });
 
+// KEEP ALL YOUR EXISTING HELPER FUNCTIONS - they stay the same
 // Handle WebSocket messages
 function handleWebSocketMessage(ws, message) {
   const clientInfo = clients.get(ws);
@@ -560,7 +588,6 @@ app.get('/health', (req, res) => {
     activeProjects: projectClients.size
   });
 });
-
 
 
 // --- end helpers ---
