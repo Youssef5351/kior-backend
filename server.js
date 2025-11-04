@@ -1952,66 +1952,7 @@ app.post('/api/invite/complete', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
-// Get collaborative screening data for a project
-app.get('/api/projects/:projectId/screening-data', authenticateToken, async (req, res) => {
-  try {
-    const { projectId } = req.params;
-    const userId = req.user.id;
-
-    console.log(`⚡ ULTRA-FAST: Loading screening data for project ${projectId}, user ${userId}`);
-
-    // OPTIMIZATION: Skip access check if you're confident about authentication
-    // OPTIMIZATION: Only load current user's data
-    const [decisions, notes] = await Promise.all([
-      // Only get CURRENT USER'S decisions
-      prisma.screeningDecision.findMany({
-        where: { 
-          projectId: projectId,
-          userId: userId // ONLY current user
-        },
-        select: {
-          id: true,
-          articleId: true,
-          status: true,
-          createdAt: true,
-          updatedAt: true,
-          // REMOVE user relation since it's always current user
-        }
-      }),
-      
-      // Only get CURRENT USER'S notes  
-      prisma.screeningNote.findMany({
-        where: { 
-          projectId: projectId,
-          userId: userId // ONLY current user
-        },
-        select: {
-          id: true,
-          articleId: true,
-          notes: true,
-          createdAt: true,
-          updatedAt: true,
-          // REMOVE user relation
-        }
-      })
-    ]);
-
-    console.log(`✅ ULTRA-FAST: Found ${decisions.length} decisions and ${notes.length} notes for user ${userId}`);
-
-    // Send response immediately
-    res.json({
-      decisions: decisions,
-      notes: notes
-    });
-
-  } catch (error) {
-    console.error('❌ Error loading screening data:', error);
-    res.status(500).json({ 
-      error: 'Failed to load screening data'
-    });
-  }
-
-});
+// Add this at the top with your other imports/constants
 
 // Helper function to check project access (extract common logic)
 async function checkProjectAccess(projectId, userId) {
@@ -2134,7 +2075,6 @@ async function saveDecisionToDatabase(projectId, userId, articleId, status, note
     console.log('Background save failed (non-critical):', error.message);
   }
 }
-// Add this to your backend routes
 app.get('/api/projects/:projectId/check-access', authenticateToken, async (req, res) => {
   try {
     const { projectId } = req.params;
@@ -2180,8 +2120,7 @@ app.get('/api/projects/:projectId/check-access', authenticateToken, async (req, 
     console.error('Error checking project access:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
-});
-// GET /api/projects/:projectId/team-stats (UPDATED)
+});// GET /api/projects/:projectId/team-stats (UPDATED)
 app.get('/api/projects/:projectId/team-stats', authenticateToken, async (req, res) => {
   try {
     const { projectId } = req.params;
