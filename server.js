@@ -215,7 +215,7 @@ const connectWebSocket = () => {
     return;
   }
 
-  const wsUrl = `ws://localhost:5000?projectId=${id}&userId=${currentUser.id}&token=${token}`;
+const wsUrl = `${wsProtocol}://kior-backend4-youssefelkoumi512-dev.apps.rm1.0a51.p1.openshiftapps.com/?projectId=${id}&userId=${currentUser.id}&token=${token}`;
   
   console.log('Connecting to WebSocket:', wsUrl);
   
