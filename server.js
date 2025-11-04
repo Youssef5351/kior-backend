@@ -3142,11 +3142,14 @@ app.get('/api/projects/:projectId/download-fulltext/:articleId', async (req, res
 });
 const PORT = process.env.PORT || 8080;
 
-app.listen(PORT, () => {
+// Use server.listen() instead of app.listen()
+server.listen(PORT, '0.0.0.0', () => {
   if (process.env.NODE_ENV !== "production") {
     console.log(`Server running locally on http://localhost:${PORT}`);
+    console.log(`🔌 WebSocket available at ws://localhost:${PORT}`);
   } else {
     console.log(`✅ Server is running in production mode on port ${PORT}`);
+    console.log(`🔌 WebSocket server ready`);
   }
 });
 
