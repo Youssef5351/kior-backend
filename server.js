@@ -1783,7 +1783,7 @@ app.post("/api/invite", authenticateToken, async (req, res) => {
       },
     });
 
-    const inviteLink = `http://localhost:5000/api/invite/accept?token=${token}`;
+    const inviteLink = `https://kior.vercel.app/api/invite/accept?token=${token}`;
 
     await transporter.sendMail({
       from: "youssefelkoumi512@gmail.com",
@@ -1880,13 +1880,13 @@ app.get('/api/invite/accept', async (req, res) => {
 
       console.log('🔐 JWT generated, redirecting to project');
       return res.redirect(
-        `http://localhost:5173/projects/${invitation.projectId}?token=${jwtToken}`
+        `https://kior.vercel.app/projects/${invitation.projectId}?token=${jwtToken}`
       );
 
     } else {
       console.log('❌ User does not exist, redirecting to signup');
       return res.redirect(
-        `http://localhost:5173/register?` + 
+        `https://kior.vercel.app/register?` + 
         `email=${encodeURIComponent(invitation.email)}&` +
         `projectId=${invitation.projectId}&` +
         `inviteToken=${token}&` +
@@ -1897,7 +1897,7 @@ app.get('/api/invite/accept', async (req, res) => {
   } catch (error) {
     console.error("❌ Error accepting invite:", error);
     return res.redirect(
-      `http://localhost:5173/error?message=${encodeURIComponent('Failed to process invitation')}`
+      `https://kior.vercel.app/error?message=${encodeURIComponent('Failed to process invitation')}`
     );
   }
 });
