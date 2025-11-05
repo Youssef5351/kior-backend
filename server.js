@@ -2565,7 +2565,7 @@ app.post("/api/projects/:id/upload", authenticateToken, upload.array("files"), a
     const uploadPromises = files.map(async (file) => {
       try {
         const fileName = `projects/${projectId}/${Date.now()}-${file.originalname}`;
-        await put(fileName, file.buffer, { access: 'private' });
+        await put(fileName, file.buffer, { access: 'public' });
         console.log(`✅ Uploaded ${file.originalname} to Vercel Blob`);
       } catch (error) {
         console.error(`⚠️ Blob upload failed for ${file.originalname}:`, error.message);
