@@ -113,7 +113,7 @@ const upload = multer({
     fileSize: 100 * 1024 * 1024, // 100MB
   }
 });
-// ✅ Upload route - handle both disk and memory storage
+// ✅ Upload route
 app.post("/upload", upload.single("file"), (req, res) => {
   console.log("File uploaded:", req.file);
   
@@ -132,8 +132,6 @@ app.post("/upload", upload.single("file"), (req, res) => {
     }
   });
 });
-
-// PDF upload configuration
 const pdfStorage = isDevelopment
   ? multer.diskStorage({
       destination: (req, file, cb) => {
@@ -163,48 +161,6 @@ const uploadPDF = multer({
     fileSize: 10 * 1024 * 1024, // 10MB limit
   }
 });
-function normalizeTitle(title = "") {
-  return title.trim().toLowerCase().replace(/\s+/g, " ");
-}
-
-
-function detectDuplicatesByTitleYear(articles) {
-  // articles: array of { id, title, year, ... }
-  // returns grouped duplicates + counts
-  const map = new Map(); // key -> array of articles
-  for (const a of articles) {
-    const title = normalizeTitle(a.title || "");
-    const year = a.year ? String(a.year) : "";
-    const key = `${title}||${year}`;
-    if (!map.has(key)) map.set(key, []);
-    map.get(key).push(a);
-  }
-
-  const duplicateGroups = []; // each group is array length>1
-  let duplicateCount = 0;     // number of extra items (if group=3 => contribute 2)
-  for (const arr of map.values()) {
-    if (arr.length > 1) {
-      duplicateGroups.push(arr);
-      duplicateCount += arr.length - 1;
-    }
-  }
-
-  const totalArticles = articles.length;
-  const notDuplicateCount = totalArticles - duplicateCount;
-  const resolved = 0;
-  const deleted = 0;
-
-  return {
-    duplicateGroups,          // grouped arrays of duplicates
-    duplicatesFlat: duplicateGroups.flat(),
-    totalDuplicates: duplicateCount,
-    unresolved: duplicateCount,
-    resolved,
-    notDuplicate: notDuplicateCount,
-    deleted,
-  };
-}
-
 // Improved WebSocket connection with better error handling
 const connectWebSocket = () => {
   if (!currentUser || !id) return;
@@ -419,7 +375,8 @@ wss.on('connection', (ws, request) => {
     console.error('❌ Connection setup error:', error);
     ws.close(4001, 'Server error during connection setup');
   }
-})
+});
+
 // Handle WebSocket messages
 function handleWebSocketMessage(ws, message) {
   const clientInfo = clients.get(ws);
@@ -559,7 +516,6 @@ app.get('/health', (req, res) => {
     activeProjects: projectClients.size
   });
 });
-
 
 // --- end helpers ---
 function parseNBIB(content) {
@@ -1272,15 +1228,6 @@ function createEmptyArticle() {
     pmid: ""
   };
 }
-function parseBibliography(content, fileType) {
-  if (fileType === "nbib") {
-    return parseNBIB(content);
-  } else if (fileType === "ris") {
-    return parseRIS(content);
-  } else {
-    throw new Error("Unsupported file type: " + fileType);
-  }
-}
 
 // Signup route
 app.post("/register", async (req, res) => {
@@ -1599,28 +1546,21 @@ app.post('/api/projects', authenticateToken, async (req, res) => {
   }
 });
 
+// Get specific project
+// Get specific project - UPDATED VERSION
 app.get('/api/projects/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Get basic project info first (fast)
     const project = await prisma.project.findFirst({
       where: {
         id,
         OR: [
-          { ownerId: req.user.id },
-          { members: { some: { userId: req.user.id } } }
+          { ownerId: req.user.id }, // owner
+          { members: { some: { userId: req.user.id } } } // invited member
         ]
       },
-      select: {
-        id: true,
-        title: true,
-        description: true,
-        type: true,        
-        domain: true,      
-        createdAt: true,
-        updatedAt: true,
-        ownerId: true,
+      include: {
         owner: {
           select: {
             firstName: true,
@@ -1628,13 +1568,31 @@ app.get('/api/projects/:id', authenticateToken, async (req, res) => {
             email: true
           }
         },
-        _count: {
+        members: {
           select: {
-            articles: {
-              where: { duplicateStatus: { not: 'deleted' } }
-            },
-            members: true,
-            invitations: true
+            id: true,
+            role: true,
+            user: {
+              select: { id: true, email: true, firstName: true, lastName: true }
+            }
+          }
+        },
+        // ✅ ADD THIS: Include invitations
+        invitations: {
+          select: {
+            id: true,
+            email: true,
+            role: true,
+            accepted: true,
+            createdAt: true
+          },
+          orderBy: {
+            createdAt: 'desc'
+          }
+        },
+        articles: {
+          orderBy: {
+            createdAt: 'desc'
           }
         }
       }
@@ -1644,66 +1602,14 @@ app.get('/api/projects/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Project not found or access denied' });
     }
 
-    // Get detailed data in parallel (much faster than sequential)
-    const [members, invitations, recentArticles] = await Promise.all([
-      // Members
-      prisma.projectMember.findMany({
-        where: { projectId: id },
-        select: {
-          id: true,
-          role: true,
-          user: {
-            select: { id: true, email: true, firstName: true, lastName: true }
-          }
-        }
-      }),
-      // Invitations
-      prisma.invitation.findMany({
-        where: { projectId: id },
-        select: {
-          id: true,
-          email: true,
-          role: true,
-          accepted: true,
-          createdAt: true
-        },
-        orderBy: { createdAt: 'desc' }
-      }),
-      // Only recent articles (limit to 10 for performance)
-      prisma.article.findMany({
-        where: { 
-          projectId: id, 
-          duplicateStatus: { not: 'deleted' } 
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 10,
-        select: {
-          id: true,
-          title: true,
-          journal: true,
-          year: true,
-          createdAt: true,
-          duplicateStatus: true
-        }
-      })
-    ]);
-
-    // Combine results
-    const response = {
-      ...project,
-      members,
-      invitations,
-      articles: recentArticles,
-      totalArticles: project._count.articles,
-    };
-    delete response._count;
-
-    res.json(response);
+    res.json(project);
   } catch (error) {
     console.error('Error fetching project:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
-});// Update project
+});
+
+// Update project
 app.put('/api/projects/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1764,6 +1670,7 @@ app.put('/api/projects/:id', authenticateToken, async (req, res) => {
   }
 });
 
+
 // Send Invite
 app.post("/api/invite", authenticateToken, async (req, res) => {
   const { emails, role, message, projectId } = req.body;
@@ -1783,7 +1690,7 @@ app.post("/api/invite", authenticateToken, async (req, res) => {
       },
     });
 
-    const inviteLink = `https://kior.vercel.app/api/invite/accept?token=${token}`;
+    const inviteLink = `http://localhost:5000/api/invite/accept?token=${token}`;
 
     await transporter.sendMail({
       from: "youssefelkoumi512@gmail.com",
@@ -1810,6 +1717,7 @@ Kior Team
 
 // Accept invitation
 // Enhanced invitation acceptance with better debugging
+// Accept invitation - SIMPLIFIED VERSION
 app.get('/api/invite/accept', async (req, res) => {
   const { token } = req.query;
   console.log('🔑 Invitation token received:', token);
@@ -1817,7 +1725,9 @@ app.get('/api/invite/accept', async (req, res) => {
   try {
     if (!token) {
       console.log('❌ No token provided');
-      return res.status(400).json({ error: 'Missing token' });
+      return res.redirect(
+        `http://localhost:5173/error?message=${encodeURIComponent('Missing invitation token')}`
+      );
     }
 
     const invitation = await prisma.invitation.findUnique({
@@ -1830,7 +1740,16 @@ app.get('/api/invite/accept', async (req, res) => {
 
     if (!invitation) {
       console.log('❌ Invalid invitation token');
-      return res.status(400).json({ error: 'Invalid or expired invitation' });
+      return res.redirect(
+        `http://localhost:5173/error?message=${encodeURIComponent('Invalid or expired invitation')}`
+      );
+    }
+
+    if (invitation.accepted) {
+      console.log('ℹ️ Invitation already accepted');
+      return res.redirect(
+        `http://localhost:5173/login?message=${encodeURIComponent('This invitation has already been used. Please login to access the project.')}`
+      );
     }
 
     console.log('📧 Invitation found for email:', invitation.email);
@@ -1843,12 +1762,6 @@ app.get('/api/invite/accept', async (req, res) => {
     if (user) {
       console.log('✅ User exists:', user.email);
       
-      // Mark invitation as accepted
-      await prisma.invitation.update({
-        where: { token },
-        data: { accepted: true }
-      });
-
       // Check if user is already a member
       const existingMember = await prisma.projectMember.findFirst({
         where: { 
@@ -1871,36 +1784,41 @@ app.get('/api/invite/accept', async (req, res) => {
         console.log('ℹ️ User already a project member');
       }
 
-      // Generate JWT
-      const jwtToken = jwt.sign(
-        { id: user.id, email: user.email },
-        JWT_SECRET,
-        { expiresIn: "24h" }
-      );
+      // Mark invitation as accepted
+      await prisma.invitation.update({
+        where: { token },
+        data: { accepted: true }
+      });
 
-      console.log('🔐 JWT generated, redirecting to project');
+      // Redirect to login page with project ID
+      console.log('🔐 Redirecting to login page');
       return res.redirect(
-        `https://kior.vercel.app/projects/${invitation.projectId}?token=${jwtToken}`
+        `http://localhost:5173/login?` +
+        `projectId=${invitation.projectId}&` +
+        `message=${encodeURIComponent('You have been added to the project! Please login to continue.')}`
       );
 
     } else {
       console.log('❌ User does not exist, redirecting to signup');
       return res.redirect(
-        `https://kior.vercel.app/register?` + 
+        `http://localhost:5173/register?` + 
         `email=${encodeURIComponent(invitation.email)}&` +
         `projectId=${invitation.projectId}&` +
         `inviteToken=${token}&` +
-        `role=${invitation.role}`
+        `role=${invitation.role}&` +
+        `message=${encodeURIComponent('Create an account to join the project')}`
       );
     }
 
   } catch (error) {
     console.error("❌ Error accepting invite:", error);
     return res.redirect(
-      `https://kior.vercel.app/error?message=${encodeURIComponent('Failed to process invitation')}`
+      `http://localhost:5173/error?message=${encodeURIComponent('Failed to process invitation')}`
     );
   }
 });
+
+// Complete registration after signup (for new users)
 app.post('/api/invite/complete', authenticateToken, async (req, res) => {
   try {
     const { inviteToken } = req.body;
@@ -1927,7 +1845,7 @@ app.post('/api/invite/complete', authenticateToken, async (req, res) => {
       data: { accepted: true }
     });
 
-    // Add user as project member if not already
+    // Add user as project member
     const existingMember = await prisma.projectMember.findFirst({
       where: { userId: req.user.id, projectId: invitation.projectId }
     });
@@ -1943,16 +1861,103 @@ app.post('/api/invite/complete', authenticateToken, async (req, res) => {
     }
 
     res.json({ 
-      message: 'Invitation completed successfully',
+      message: 'Successfully joined the project',
       projectId: invitation.projectId 
     });
 
   } catch (error) {
-    console.error('Error completing invitation:', error);
+    console.error('Error completing registration:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
-// Add this at the top with your other imports/constants
+// Get collaborative screening data for a project
+app.get('/api/projects/:projectId/screening-data', authenticateToken, async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const userId = req.user.id;
+
+    console.log(`Loading screening data for project ${projectId}, user ${userId}`);
+
+    const hasAccess = await checkProjectAccess(projectId, userId);
+    if (!hasAccess) {
+      console.log(`Access denied for user ${userId} to project ${projectId}`);
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      include: {
+        screeningDecisions: {
+          include: { 
+            user: { 
+              select: { id: true, firstName: true, lastName: true } 
+            }
+          }
+        },
+        screeningNotes: {
+          include: { 
+            user: { 
+              select: { id: true, firstName: true, lastName: true } 
+            }
+          }
+        }
+      }
+    });
+
+    if (!project) {
+      console.log(`Project ${projectId} not found`);
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    const isOwner = project.ownerId === userId;
+    
+    let decisions = project.screeningDecisions || [];
+    let notes = project.screeningNotes || [];
+    
+    console.log(`Total decisions in DB: ${decisions.length}`);
+    console.log(`Blind mode: ${project.blindMode}, Is owner: ${isOwner}`);
+    
+    // CORRECTED LOGIC: Only filter if blind mode is ON and user is NOT owner
+    if (project.blindMode && !isOwner) {
+      decisions = decisions.filter(d => d.userId === userId);
+      notes = notes.filter(n => n.userId === userId);
+      console.log(`🔒 Blind mode ON - Filtered to user's data only: ${decisions.length} decisions`);
+    } else {
+      // Explicitly log that we're showing ALL data
+      console.log(`👁️ Blind mode OFF (or owner) - Showing ALL data: ${decisions.length} decisions to user ${userId}`);
+    }
+
+    const response = {
+      decisions: decisions,
+      notes: notes,
+      blindMode: project.blindMode,
+      isOwner: isOwner,
+      // Add debug info
+      meta: {
+        totalDecisions: project.screeningDecisions?.length || 0,
+        returnedDecisions: decisions.length,
+        userId: userId,
+        projectId: projectId
+      }
+    };
+
+    console.log(`📤 Sending response:`, {
+      decisionsCount: response.decisions.length,
+      notesCount: response.notes.length,
+      blindMode: response.blindMode,
+      isOwner: response.isOwner
+    });
+
+    res.json(response);
+
+  } catch (error) {
+    console.error('Error loading screening data:', error);
+    res.status(500).json({ 
+      error: 'Failed to load screening data',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
 
 // Helper function to check project access (extract common logic)
 async function checkProjectAccess(projectId, userId) {
@@ -1966,6 +1971,7 @@ async function checkProjectAccess(projectId, userId) {
     });
 
     if (project) {
+      console.log(`✅ User ${userId} is OWNER of project ${projectId}`);
       return true;
     }
 
@@ -1977,13 +1983,18 @@ async function checkProjectAccess(projectId, userId) {
       }
     });
 
+    if (projectMember) {
+      console.log(`✅ User ${userId} is MEMBER of project ${projectId}`);
+    } else {
+      console.log(`❌ User ${userId} has NO ACCESS to project ${projectId}`);
+    }
+
     return !!projectMember;
   } catch (error) {
     console.error('Error checking project access:', error);
     return false;
   }
 }
-
 
 // FINAL WORKING VERSION - MySQL compatible
 app.post('/api/projects/:projectId/screening-decisions', authenticateToken, async (req, res) => {
@@ -2074,8 +2085,7 @@ async function saveDecisionToDatabase(projectId, userId, articleId, status, note
   } catch (error) {
     console.log('Background save failed (non-critical):', error.message);
   }
-}
-app.get('/api/projects/:projectId/check-access', authenticateToken, async (req, res) => {
+}app.get('/api/projects/:projectId/check-access', authenticateToken, async (req, res) => {
   try {
     const { projectId } = req.params;
 
@@ -2120,7 +2130,8 @@ app.get('/api/projects/:projectId/check-access', authenticateToken, async (req, 
     console.error('Error checking project access:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
-});// GET /api/projects/:projectId/team-stats (UPDATED)
+});
+// GET /api/projects/:projectId/team-stats (UPDATED)
 app.get('/api/projects/:projectId/team-stats', authenticateToken, async (req, res) => {
   try {
     const { projectId } = req.params;
@@ -2332,7 +2343,88 @@ app.get('/api/projects/:projectId/team-stats', authenticateToken, async (req, re
     });
   }
 });
+// Debug endpoint to check import issues
+app.post("/api/projects/:projectId/debug-import", async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const { content } = req.body; // Send the .nbib content directly
 
+    console.log("🔍 DEBUG: Starting import analysis...");
+    console.log("📄 Content length:", content.length);
+    console.log("📁 Project ID:", projectId);
+
+    // Parse the NBIB content
+    const parsedArticles = parseNBIB(content);
+    console.log("📊 Parsed articles:", parsedArticles.length);
+
+    // Check for parsing issues
+    const articlesWithTitles = parsedArticles.filter(a => a.title && a.title.trim());
+    const articlesWithAuthors = parsedArticles.filter(a => a.authors && a.authors.length > 0);
+    
+    console.log("📝 Articles with titles:", articlesWithTitles.length);
+    console.log("👥 Articles with authors:", articlesWithAuthors.length);
+
+    // Try to import first 5 articles to see if there are database errors
+    const sampleArticles = parsedArticles.slice(0, 5);
+    const importResults = [];
+
+    for (const articleData of sampleArticles) {
+      try {
+        console.log("💾 Attempting to save:", articleData.title?.substring(0, 50) + "...");
+        
+        const article = await prisma.article.create({
+          data: {
+            title: articleData.title || "Untitled",
+            abstract: articleData.abstract,
+            journal: articleData.journal,
+            year: articleData.year,
+            doi: articleData.doi,
+            pmid: articleData.pmid,
+            url: articleData.url,
+            projectId: projectId,
+            authors: {
+              create: articleData.authors.map(name => ({ name }))
+            },
+            publicationTypes: {
+              create: articleData.publicationTypes.map(value => ({ value }))
+            },
+            topics: {
+              create: articleData.topics.map(value => ({ value }))
+            }
+          }
+        });
+        
+        importResults.push({ success: true, title: articleData.title, id: article.id });
+        console.log("✅ Successfully saved:", article.id);
+        
+      } catch (error) {
+        console.error("❌ Failed to save:", error.message);
+        importResults.push({ 
+          success: false, 
+          title: articleData.title, 
+          error: error.message 
+        });
+      }
+    }
+
+    res.json({
+      parsedCount: parsedArticles.length,
+      withTitles: articlesWithTitles.length,
+      withAuthors: articlesWithAuthors.length,
+      sampleImport: importResults,
+      firstFewArticles: parsedArticles.slice(0, 3).map(a => ({
+        title: a.title,
+        authors: a.authors,
+        year: a.year,
+        journal: a.journal
+      }))
+    });
+
+  } catch (error) {
+    console.error("❌ Debug import error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
 // Start a screening session (FIXED)
 app.post('/api/projects/:projectId/screening-sessions/start', authenticateToken, async (req, res) => {
   try {
@@ -2671,7 +2763,7 @@ async function bulkInsertRelatedData(originalArticles, savedArticles) {
 
   console.log(`✅ Inserted related data: ${authorsData.length} authors, ${publicationTypesData.length} pub types, ${topicsData.length} topics`);
 }
-  // Delete project
+// Delete project
 app.delete('/api/projects/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -2724,52 +2816,84 @@ app.get("/api/projects/:id/analysis", async (req, res) => {
   try {
     const { id } = req.params;
 
-    const project = await prisma.project.findUnique({
-      where: { id },
-      include: { articles: true },
+    // Get all counts in parallel using aggregation (MUCH FASTER)
+    const [
+      articleCounts,
+      duplicateDetection,
+      screeningCount,
+      activeArticles
+    ] = await Promise.all([
+      // Article counts by status - uses database aggregation
+      prisma.article.groupBy({
+        by: ['duplicateStatus'],
+        where: { projectId: id },
+        _count: true
+      }),
+      // Duplicate detection data
+      prisma.duplicateDetection.findUnique({
+        where: { projectId: id },
+        select: { totalArticles: true, totalGroups: true }
+      }),
+      // Screening count - direct count query
+      prisma.screeningDecision.count({
+        where: { 
+          article: { projectId: id, duplicateStatus: { not: 'deleted' } }
+        }
+      }),
+      // Only get minimal article data for display
+      prisma.article.findMany({
+        where: { 
+          projectId: id, 
+          duplicateStatus: { not: 'deleted' } 
+        },
+        select: {
+          id: true,
+          title: true,
+          journal: true,
+          year: true,
+          duplicateStatus: true,
+          screeningDecisions: {
+            take: 1, // Just check if screening exists
+            select: { id: true }
+          }
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 50 // Limit for performance
+      })
+    ]);
+
+    // Calculate counts from aggregation (much faster than JavaScript filtering)
+    const statusCounts = {
+      not_duplicate: 0,
+      deleted: 0,
+      null: 0 // No status (active articles)
+    };
+
+    articleCounts.forEach(group => {
+      const status = group.duplicateStatus || 'null';
+      statusCounts[status] = group._count;
     });
 
-    if (!project) {
-      return res.status(404).json({ message: "Project not found" });
-    }
-
-    // 🔹 normalize helper
-    function normalizeTitle(title = "") {
-      return title.trim().toLowerCase().replace(/\s+/g, " ");
-    }
-
-    const seen = new Map();
-    const duplicates = [];
-
-    for (let art of project.articles || []) {
-      const titleKey = normalizeTitle(art.title);
-      const yearKey = art.year ? art.year.toString() : "";
-      const key = `${titleKey}-${yearKey}`;
-
-      if (seen.has(key)) {
-        duplicates.push(art);
-      } else {
-        seen.set(key, art);
-      }
-    }
+    const totalActiveArticles = statusCounts.null + statusCounts.not_duplicate;
+    const totalDuplicates = duplicateDetection?.totalGroups || 0;
+    const unresolved = duplicateDetection?.totalGroups || 0;
 
     res.json({
-      totalArticles: project.articles.length,
-      totalDuplicates: duplicates.length,
-      unresolved: duplicates.length,
-      resolved: 0,
-      notDuplicate: 0,
-      deleted: 0,
-      duplicates,
-      articles: project.articles,
+      totalArticles: totalActiveArticles,
+      totalArticlesIncludingDeleted: totalActiveArticles + statusCounts.deleted,
+      totalDuplicates: totalDuplicates,
+      unresolved: unresolved,
+      resolved: statusCounts.not_duplicate + statusCounts.deleted,
+      notDuplicate: statusCounts.not_duplicate,
+      deleted: statusCounts.deleted,
+      screenedArticles: screeningCount,
+      articles: activeArticles,
     });
   } catch (err) {
     console.error("Error fetching analysis:", err);
     res.status(500).json({ message: "Server error", details: err.message });
   }
 });
-
-// Update blind mode setting for a project
 app.put('/api/projects/:id/blind-mode', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -2810,6 +2934,10 @@ app.put('/api/projects/:id/blind-mode', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Failed to update blind mode' });
   }
 });
+
+
+// Full-text article management part
+
 
 // GET /api/projects/:projectId/fulltext-articles
 app.get('/api/projects/:projectId/fulltext-articles', async (req, res) => {
