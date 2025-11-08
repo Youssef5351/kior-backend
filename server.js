@@ -1670,7 +1670,6 @@ app.put('/api/projects/:id', authenticateToken, async (req, res) => {
   }
 });
 
-
 // Send Invite
 app.post("/api/invite", authenticateToken, async (req, res) => {
   const { emails, role, message, projectId } = req.body;
