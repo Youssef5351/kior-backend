@@ -1690,7 +1690,7 @@ app.post("/api/invite", authenticateToken, async (req, res) => {
       },
     });
 
-    const inviteLink = `http://localhost:5000/api/invite/accept?token=${token}`;
+    const inviteLink = `https://kior.vercel.app/api/invite/accept?token=${token}`;
 
     await transporter.sendMail({
       from: "youssefelkoumi512@gmail.com",
@@ -1726,7 +1726,7 @@ app.get('/api/invite/accept', async (req, res) => {
     if (!token) {
       console.log('❌ No token provided');
       return res.redirect(
-        `http://localhost:5173/error?message=${encodeURIComponent('Missing invitation token')}`
+        `https://kior.vercel.app/error?message=${encodeURIComponent('Missing invitation token')}`
       );
     }
 
@@ -1741,14 +1741,14 @@ app.get('/api/invite/accept', async (req, res) => {
     if (!invitation) {
       console.log('❌ Invalid invitation token');
       return res.redirect(
-        `http://localhost:5173/error?message=${encodeURIComponent('Invalid or expired invitation')}`
+        `https://kior.vercel.app/error?message=${encodeURIComponent('Invalid or expired invitation')}`
       );
     }
 
     if (invitation.accepted) {
       console.log('ℹ️ Invitation already accepted');
       return res.redirect(
-        `http://localhost:5173/login?message=${encodeURIComponent('This invitation has already been used. Please login to access the project.')}`
+        `https://kior.vercel.app/login?message=${encodeURIComponent('This invitation has already been used. Please login to access the project.')}`
       );
     }
 
@@ -1793,7 +1793,7 @@ app.get('/api/invite/accept', async (req, res) => {
       // Redirect to login page with project ID
       console.log('🔐 Redirecting to login page');
       return res.redirect(
-        `http://localhost:5173/login?` +
+        `https://kior.vercel.app/login?` +
         `projectId=${invitation.projectId}&` +
         `message=${encodeURIComponent('You have been added to the project! Please login to continue.')}`
       );
@@ -1801,7 +1801,7 @@ app.get('/api/invite/accept', async (req, res) => {
     } else {
       console.log('❌ User does not exist, redirecting to signup');
       return res.redirect(
-        `http://localhost:5173/register?` + 
+        `https://kior.vercel.app/register?` + 
         `email=${encodeURIComponent(invitation.email)}&` +
         `projectId=${invitation.projectId}&` +
         `inviteToken=${token}&` +
@@ -1813,7 +1813,7 @@ app.get('/api/invite/accept', async (req, res) => {
   } catch (error) {
     console.error("❌ Error accepting invite:", error);
     return res.redirect(
-      `http://localhost:5173/error?message=${encodeURIComponent('Failed to process invitation')}`
+      `https://kior.vercel.app/error?message=${encodeURIComponent('Failed to process invitation')}`
     );
   }
 });
