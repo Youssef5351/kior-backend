@@ -1689,7 +1689,7 @@ app.post("/api/invite", authenticateToken, async (req, res) => {
       },
     });
 
-    const inviteLink = `https://kior.vercel.app/api/invite/accept?token=${token}`;
+    const inviteLink = `https://kior-backend4-youssefelkoumi512-dev.apps.rm1.0a51.p1.openshiftapps.com/api/invite/accept?token=${token}`;
 
     await transporter.sendMail({
       from: "youssefelkoumi512@gmail.com",
